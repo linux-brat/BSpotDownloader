@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# BSpot (Spotify-only) hardened main app
-# - Entities: playlist, album, track, artist (top tracks)
-# - Always outputs MP3 320 kbps
-# - Robust HTTP + JSON validation, retries, and clear error messages
+# BSpot (Spotify-only) — resilient normalization + clear errors
+# Entities: playlist, album, track, artist (top tracks)
+# Output: MP3 320 kbps
+# Config: ~/.config/bspot/config (never re-prompt if present)
 
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
@@ -21,10 +21,6 @@ Usage:
   bspot                 Launch menu
   bspot <spotify-url>   Process a Spotify URL directly
   bspot -h | --help     Show help
-
-Notes:
-- Only public Spotify resources are accessible with Client Credentials flow.
-- Private playlists require Authorization Code flow (not implemented here).
 EOF
 }
 
@@ -44,6 +40,7 @@ first_time_config() {
       echo "SPOTIFY_CLIENT_SECRET=\"$csec\""
       echo "DOWNLOADS_DIR=\"$HOME/Downloads/BSpot\""
       echo "YTDLP_SEARCH_COUNT=\"1\""
+      echo "MARKET=\"US\""
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
   fi
@@ -56,6 +53,7 @@ load_config() {
   : "${SPOTIFY_CLIENT_SECRET:?Missing SPOTIFY_CLIENT_SECRET in config}"
   : "${DOWNLOADS_DIR:?Missing DOWNLOADS_DIR in config}"
   : "${YTDLP_SEARCH_COUNT:=1}"
+  : "${MARKET:=US}"
 }
 
 border() { printf "%s\n" "=================================================="; }
@@ -74,7 +72,6 @@ sanitize_filename() {
   printf "%s" "$name"
 }
 
-# Detect Spotify and parse type/ID
 is_spotify() { local u="${1,,}"; [[ "$u" == *"open.spotify.com/"* || "$u" == spotify:* ]]; }
 
 parse_spotify_type_id() {
@@ -94,7 +91,6 @@ parse_spotify_type_id() {
   fi
 }
 
-# Spinner wrapper
 spinner_run() {
   local msg="$1"; shift
   local chars='|/-\' i=0
@@ -112,21 +108,9 @@ spinner_run() {
   return $status
 }
 
-# Networking helpers with retry and strict JSON checks
-curl_with_status() {
-  # prints: <body>\n<http_code>
-  curl -sS "$@" -w '\n%{http_code}'
-}
-
-expect_json() {
-  local data="$1"
-  echo "$data" | jq -e '.' >/dev/null 2>&1
-}
-
-retry_once() {
-  # run a command; if it fails, sleep and try once more
-  "$@" || { sleep 0.7; "$@"; }
-}
+curl_with_status() { curl -sS "$@" -w '\n%{http_code}'; }
+expect_json() { echo "$1" | jq -e '.' >/dev/null 2>&1; }
+retry_once() { "$@" || { sleep 0.7; "$@"; }; }
 
 spotify_get_token() {
   local id="$1" sec="$2" out http body
@@ -155,7 +139,6 @@ curl_json() {
   printf "%s" "$body"
 }
 
-# Fetch and normalize to an array of {title, artists[], album, duration_ms}
 fetch_playlist_tracks() {
   local id="$1" token="$2"
   local url="https://api.spotify.com/v1/playlists/${id}/tracks?limit=100"
@@ -245,7 +228,6 @@ download_search_to_mp3() {
   local parent; parent="$(dirname "$dest")"
   ensure_dir "$parent"
   local tmpl="${parent}/%(title)s.%(ext)s"
-  # Use --default-search to avoid region DNS oddities, and limit to 1 hit
   yt-dlp -q --default-search "ytsearch" -o "$tmpl" "ytsearch1:${query}"
   local latest; latest="$(ls -t "${parent}"/* 2>/dev/null | head -n1 || true)"
   if [ -z "$latest" ]; then warn "nothing downloaded for: $query"; return 1; fi
@@ -283,7 +265,7 @@ resolve_spotify_tracks() {
     track)    out="$(fetch_track "$id" "$token")" ;;
     artist)
       local all topn
-      all="$(fetch_artist_top_tracks "$id" "$token")"
+      all="$(fetch_artist_top_tracks "$id" "$token" "$MARKET")"
       topn="$(choose_artist_top_n)"
       out="$(echo "$all" | jq -c ".[0:$topn]")"
       ;;
@@ -291,9 +273,7 @@ resolve_spotify_tracks() {
   esac
 
   # Guarantee array
-  if ! echo "$out" | jq -e 'type=="array"' >/dev/null 2>&1; then
-    die "Spotify returned an unexpected response (not a track list). The resource might be private or unavailable in your region."
-  fi
+  echo "$out" | jq -e 'type=="array"' >/dev/null 2>&1 || die "Spotify returned an unexpected response (not a track list). The resource might be private or unavailable in your region."
   printf "%s" "$out"
 }
 
@@ -304,7 +284,7 @@ process_spotify_url() {
   if ! spinner_run "Loading from Spotify…" resolve_spotify_tracks "$url"; then
     die "Failed to load tracks from Spotify."
   fi
-  tracks="$(resolve_spotify_tracks "$url")" # resolve once again to capture output after spinner
+  tracks="$(resolve_spotify_tracks "$url")"
   len="$(echo "$tracks" | jq 'length' 2>/dev/null || echo 0)"
   [ "$len" -gt 0 ] || die "No tracks found. If this is a private resource, client-credentials cannot read it."
 
