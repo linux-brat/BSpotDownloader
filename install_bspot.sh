@@ -9,7 +9,7 @@ set -euo pipefail
 # ====== EDIT THESE FOR YOUR REPO ======
 GITHUB_OWNER="linux-brat"
 GITHUB_REPO="BSpotDownloader"
-GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/main"
+GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/master"
 # ======================================
 
 BIN_DIR="/usr/local/bin"
@@ -99,7 +99,7 @@ set -euo pipefail
 
 OWNER="YOURUSER"
 REPO="YOURREPO"
-RAW_BASE="https://raw.githubusercontent.com/${OWNER}/${REPO}/main"
+RAW_BASE="https://raw.githubusercontent.com/${OWNER}/${REPO}/master"
 
 APP_HOME="${HOME}/.local/share/bspot"
 APP_SCRIPT="${APP_HOME}/bspot.sh"
