@@ -2,13 +2,15 @@
 set -euo pipefail
 
 # Linux-only installer for BSpotDownloader
-# - Cleans previous install (launcher + local cache)
+# - Cleans previous install (launcher + local cache) silently
 # - Installs dependencies if missing
-# - Installs launcher that fetches bspot.sh from master (no VERSION file)
+# - Installs launcher that always fetches latest bspot.sh from master
 # - Preserves ~/.config/bspot/config
-
+#
+# Repo raw URL (fixed):
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/linux-brat/BSpotDownloader/master/bspot.sh"
 
+# Paths
 BIN_DIR="/usr/local/bin"
 LAUNCHER_PATH="${BIN_DIR}/bspot"
 ALIAS_PATH="${BIN_DIR}/bspotdownloader"
@@ -31,16 +33,16 @@ need_sudo() {
 
 install_pkg_linux() {
   if have_cmd apt-get; then
-    sudo apt-get update -y
-    sudo apt-get install -y "$@"
+    sudo apt-get update -y >/dev/null
+    sudo apt-get install -y "$@" >/dev/null
   elif have_cmd dnf; then
-    sudo dnf install -y "$@"
+    sudo dnf install -y "$@" -q
   elif have_cmd yum; then
-    sudo yum install -y "$@"
+    sudo yum install -y "$@" -q
   elif have_cmd pacman; then
-    sudo pacman -Sy --noconfirm "$@"
+    sudo pacman -Sy --noconfirm "$@" >/dev/null
   elif have_cmd zypper; then
-    sudo zypper install -y "$@"
+    sudo zypper install -y "$@" >/dev/null
   fi
 }
 
@@ -57,14 +59,14 @@ ensure_deps() {
   ensure_dep jq jq
   ensure_dep ffmpeg ffmpeg
   if ! have_cmd yt-dlp; then
-    if have_cmd apt-get; then sudo apt-get install -y yt-dlp || true
-    elif have_cmd dnf; then sudo dnf install -y yt-dlp || true
-    elif have_cmd pacman; then sudo pacman -Sy --noconfirm yt-dlp || true
-    elif have_cmd zypper; then sudo zypper install -y yt-dlp || true
+    if have_cmd apt-get; then sudo apt-get install -y yt-dlp >/dev/null || true
+    elif have_cmd dnf; then sudo dnf install -y yt-dlp -q || true
+    elif have_cmd pacman; then sudo pacman -Sy --noconfirm yt-dlp >/dev/null || true
+    elif have_cmd zypper; then sudo zypper install -y yt-dlp >/dev/null || true
     fi
     if ! have_cmd yt-dlp; then
-      if have_cmd pipx; then pipx install yt-dlp || pipx upgrade yt-dlp || true
-      elif have_cmd pip3; then pip3 install --user -U yt-dlp; export PATH="$HOME/.local/bin:$PATH"
+      if have_cmd pipx; then pipx install yt-dlp >/dev/null || pipx upgrade yt-dlp >/dev/null || true
+      elif have_cmd pip3; then pip3 install --user -U yt-dlp >/dev/null; export PATH="$HOME/.local/bin:$PATH"
       fi
     fi
     have_cmd yt-dlp || die "yt-dlp is required"

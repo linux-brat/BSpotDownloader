@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# BSpotDownloader main app (Linux) — robust Spotify playlist/album/track handling
+# BSpotDownloader main app (Linux) — robust Spotify + YouTube handling
 # - YouTube: choose MP4 video quality (Best, 4K, 2K, 1080p, 720p, 480p)
 # - Spotify & other links: MP3 audio-only 320k
 # - Persistent config reused automatically
@@ -77,31 +77,25 @@ sanitize_filename() {
 is_spotify() { local u="${1,,}"; [[ "$u" == *"open.spotify.com/"* || "$u" == spotify:* ]]; }
 is_youtube() { local u="${1,,}"; [[ "$u" == *"youtube.com/"* || "$u" == *"youtu.be/"* ]]; }
 
-# Spotify parsing — strip query string safely
+# Spotify parsing — strip query/fragment and validate base62 ID
 spotify_parse_type_id() {
   local url="$1" path type id
   if [[ "$url" == spotify:* ]]; then
     IFS=':' read -r _ type id <<<"$url"
-    echo "$type" "$id"; return
+  else
+    path="$(printf "%s" "$url" | sed -E 's#https?://open\.spotify\.com/##' | cut -d'?' -f1 | cut -d'#' -f1)"
+    type="$(printf "%s" "$path" | awk -F'/' '{print $1}')"
+    id="$(printf "%s" "$path" | awk -F'/' '{print $2}')"
   fi
-  # Normalize and strip queries/fragments
-  path="$(printf "%s" "$url" | sed -E 's#https?://open\.spotify\.com/##' | cut -d'?' -f1 | cut -d'#' -f1)"
-  type="$(printf "%s" "$path" | cut -d'/' -f1)"
-  id="$(printf "%s" "$path" | cut -d'/' -f2)"
-  echo "$type" "$id"
+  id="$(printf "%s" "$id" | cut -d'/' -f1)"
+  if [[ -z "$type" || -z "$id" || ! "$id" =~ ^[A-Za-z0-9]+$ ]]; then
+    echo "" ""
+  else
+    echo "$type" "$id"
+  fi
 }
 
-spotify_token() {
-  local id="$1" sec="$2"
-  local resp http
-  # capture HTTP status to detect auth errors
-  http="$(
-    resp="$(curl -sS -w '%{http_code}' -u "${id}:${sec}" -d grant_type=client_credentials https://accounts.spotify.com/api/token -o >(cat))"
-    printf "%s" "$resp"
-  )"
-  # resp is the body, http is last 3 digits in resp var above (handled differently)
-}
-
+# Spotify auth with explicit status checks
 spotify_get_token() {
   local id="$1" sec="$2"
   local body http
@@ -115,7 +109,6 @@ spotify_get_token() {
   echo "$body" | jq -r '.access_token'
 }
 
-# Curl JSON with error handling
 curl_json() {
   local url="$1" token="$2"
   local body http
@@ -123,13 +116,14 @@ curl_json() {
   http="$(echo "$body" | tail -n1)"
   body="$(echo "$body" | sed '$d')"
   if [ "$http" != "200" ]; then
-    # attempt to read Spotify error message
-    local msg; msg="$(echo "$body" | jq -r '.error.message? // .error?.message? // "request failed"')" || msg="request failed"
-    die "Spotify API error ($http): $msg"
+    if echo "$body" | jq -e '.' >/dev/null 2>&1; then
+      local msg; msg="$(echo "$body" | jq -r '.error.message? // .error?.status? // "request failed"')" || msg="request failed"
+      die "Spotify API error ($http): $msg ($url)"
+    else
+      die "Spotify API error ($http) at $url"
+    fi
   fi
-  # basic validation that it's JSON object/array
-  echo "$body" | jq -e '.' >/dev/null 2>&1 || die "Received non-JSON from Spotify"
-  printf "%s" "$body"
+  echo "$body"
 }
 
 spotify_get_tracks_json() {
@@ -141,7 +135,6 @@ spotify_get_tracks_json() {
       while [ -n "$url" ] && [ "$url" != "null" ]; do
         local page part next
         page="$(curl_json "$url" "$token")"
-        # If some items are null (removed/unavailable), skip them
         part="$(echo "$page" | jq -c '[.items[]? | select(.track != null and .track.type == "track") | {
           title: .track.name,
           artists: (.track.artists | map(.name)),
@@ -287,7 +280,9 @@ resolve_spotify_tracks() {
   local url="$1"
   local type id token
   read -r type id < <(spotify_parse_type_id "$url")
-  [ -n "$type" ] && [ -n "$id" ] || die "Failed to parse Spotify URL/URI"
+  if [ -z "$type" ] || [ -z "$id" ]; then
+    die "Could not parse a valid Spotify ID from the URL. Ensure it’s a public playlist/album/track link."
+  fi
   token="$(spotify_get_token "$SPOTIFY_CLIENT_ID" "$SPOTIFY_CLIENT_SECRET")"
   [ -n "$token" ] || die "Failed to obtain Spotify token"
   spotify_get_tracks_json "$type" "$id" "$token"
@@ -308,8 +303,11 @@ process_url() {
 
   if is_spotify "$url"; then
     local tracks; tracks="$(with_loading "Loading Spotify…" resolve_spotify_tracks "$url")"
-    local len; len="$(echo "$tracks" | jq 'length')" || die "Invalid response from Spotify"
-    [ "$len" -gt 0 ] || die "No tracks found (playlist may be private/unavailable)"
+    if ! echo "$tracks" | jq -e 'type=="array"' >/dev/null 2>&1; then
+      die "Invalid response from Spotify (not JSON array)."
+    fi
+    local len; len="$(echo "$tracks" | jq 'length')"
+    [ "$len" -gt 0 ] || die "No tracks found. If this is a private playlist, client-credentials access cannot read it."
     print_tracks "$tracks"
     prompt "Download all as MP3? [y/N] "; case "${REPLY,,}" in y|yes) ;; *) echo "Cancelled."; return 0;; esac
     local type; type="$(spotify_parse_type_id "$url" | awk '{print $1}')"
