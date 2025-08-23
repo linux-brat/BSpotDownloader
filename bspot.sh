@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# BSpot (Spotify-only) — MP3 320k with cover art + Stage 3 UX:
-# - Neon banner sweep
-# - Live waveform ribbon on top progress line
-# - Hype moment one-liners between tracks
+# BSpot (Spotify-only) — MP3 320k with cover art + Stage 3 & 4 UX
+# - Neon banner (non-spam: once at menu; subtle glow on track start)
+# - Live top progress bar with waveform ribbon
+# - Post-processing:
+#   * 60s crossfade sampler (default: 6 clips x 10s with 2s crossfades)
+#   * 15s epilogue video (1080p) with banner + scrolling track list + gentle audio bed
 # Supports: playlist, album, track, artist (top tracks)
-# Config: ~/.config/bspot/config (reused; never re-asked if present)
+# Config: ~/.config/bspot/config (reused)
 
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
@@ -24,27 +26,30 @@ bar()  { printf "%s\n" "========================================================
 
 BANNER_TXT=$'██████╗░░██████╗██████╗░░█████╗░████████╗\n██╔══██╗██╔════╝██╔══██╗██╔══██╗╚══██╔══╝\n██████╦╝╚█████╗░██████╔╝██║░░██║░░░██║░░░\n██╔══██╗░╚═══██╗██╔═══╝░██║░░██║░░░██║░░░\n██████╦╝██████╔╝██║░░░░░╚█████╔╝░░░██║░░░\n╚═════╝░╚═════╝░╚═╝░░░░░░╚════╝░░░░╚═╝░░░'
 
-banner_print_plain() { printf "%s\n" "$BANNER_TXT"; }
+banner_once_printed="0"
 
-banner_sweep() {
-  # Neon sweep: cycles cyan -> magenta -> yellow over the banner briefly
-  local colors=(6 5 3 2 4 1)
-  local i j
+banner_sweep_once() {
+  [ "$banner_once_printed" = "1" ] && return 0
+  banner_once_printed="1"
   IFS=$'\n' read -rd '' -a lines <<<"$BANNER_TXT" || true
-  for ((j=0;j<2;j++)); do
-    for i in "${colors[@]}"; do
-      for row in "${lines[@]}"; do
-        printf "%s%s%s\n" "$(cc "$i")" "$row" "$(cr)"
-      done
-      sleep 0.06
-      # move cursor up to redraw over banner
-      tput cuu ${#lines[@]} >/dev/null 2>&1 || true
-    done
+  local colors=(6 5 3 2 4 1)
+  for i in "${colors[@]}"; do
+    for row in "${lines[@]}"; do printf "%s%s%s\n" "$(cc "$i")" "$row" "$(cr)"; done
+    sleep 0.05
+    tput cuu ${#lines[@]} >/dev/null 2>&1 || true
   done
-  # final static cyan
-  for row in "${lines[@]}"; do
-    printf "%s%s%s\n" "$(cc 6)" "$row" "$(cr)"
+  for row in "${lines[@]}"; do printf "%s%s%s\n" "$(cc 6)" "$row" "$(cr)"; done
+}
+
+track_glow() {
+  # single-line glow before each track (no big banner)
+  local txt="▶ $(sanitize_filename "$1")"
+  for c in 6 5 3 2 4; do
+    echo "$(cc $c)$txt$(cr)"
+    tput cuu1 >/dev/null 2>&1 || true
+    sleep 0.04
   done
+  echo "$(cc 6)$txt$(cr)"
 }
 
 title() { bar; printf "  %s\n" "$(cb)$(cc 6)$1$(cr)"; bar; }
@@ -131,6 +136,8 @@ parse_spotify_type_id() {
     echo "$type" "$id"
   fi
 }
+
+timestamp() { date +%Y%m%d_%H%M%S; }
 
 # ===================== Network =====================
 curl_with_status() { curl -sS "$@" -w '\n%{http_code}'; }
@@ -272,20 +279,15 @@ hype_moment() {
   local mins=$(( (duration_ms/1000)/60 ))
   local t="${title,,}"
   local msg=""
-  if [ "$mins" -ge 6 ]; then
-    msg="Epic length detected — settle in."
-  elif [[ "$t" == *"live"* || "$t" == *"unplugged"* ]]; then
-    msg="Live vibes incoming — feel the room."
-  elif [[ "$t" == *"remix"* || "$t" == *"edit"* ]]; then
-    msg="Alternate cut — fresh spin on a classic."
-  elif [[ "$t" == *"symphony"* || "$t" == *"concerto"* || "$t" == *"raga"* ]]; then
-    msg="Serious musicianship on deck."
+  if [ "$mins" -ge 6 ]; then msg="Epic length detected — settle in."
+  elif [[ "$t" == *"live"* || "$t" == *"unplugged"* ]]; then msg="Live vibes incoming — feel the room."
+  elif [[ "$t" == *"remix"* || "$t" == *"edit"* ]]; then msg="Alternate cut — fresh spin."
+  elif [[ "$t" == *"symphony"* || "$t" == *"concerto"* || "$t" == *"raga"* ]]; then msg="Serious musicianship on deck."
   fi
   [ -n "$msg" ] && echo "$(cc 5)★ $msg$(cr)"
 }
 
-# ===================== Top progress: waveform + metrics =====================
-# We synthesize a small “waveform ribbon” using astats snapshots on the fly.
+# ===================== Waveform progress =====================
 print_progress_top() {
   local name="$1" line="$2" waveseg="$3"
   local pct speed eta
@@ -297,37 +299,26 @@ print_progress_top() {
   local w=34 filled=$(( p * w / 100 )) empty=$(( w - filled ))
   local pbar="$(printf "%0.s█" $(seq 1 $filled))$(printf "%0.s░" $(seq 1 $empty))"
 
-  savec
-  mv_home
+  savec; mv_home
   printf "%s\r" "$(cb)$(cc 6)♪ $(sanitize_filename "$name")$(cr)"
   printf "\n[%s] %3s  %s  %s\r" "$pbar" "${pct:-..%}" "${eta:+ETA $eta}" "${speed:-}"
-  # ASCII waveform line (third row)
   printf "\n%s\r" "${waveseg:-}"
   restc
 }
 
 clear_progress_top() {
-  savec
-  mv_home
-  printf "%-100s\r" ""
-  printf "\n%-100s\r" ""
-  printf "\n%-100s\r" ""
+  savec; mv_home
+  printf "%-100s\r" ""; printf "\n%-100s\r" ""; printf "\n%-100s\r" ""
   restc
 }
 
-# create a tiny waveform snippet from an audio file (fast)
-# returns a 60-char bar using ascii levels ░▒▓█
 make_wave_snippet() {
   local infile="$1"
-  # sample first ~0.4s envelope
-  local vals; vals="$(ffmpeg -hide_banner -loglevel error -t 0.4 -i "$infile" -af astats=metadata=1:reset=1 -f null - 2>&1 \
+  local vals; vals="$(ffmpeg -hide_banner -loglevel error -t 0.35 -i "$infile" -af astats=metadata=1:reset=1 -f null - 2>&1 \
      | awk -F': ' '/Peak_level/ {printf("%.3f ",$2)}' 2>/dev/null || true)"
   [ -z "$vals" ] && { echo ""; return 0; }
-  # map values to 0..1, then to blocks
   local out="" v scaled ch idx=0
   for v in $vals; do
-    # v in dB, negative; normalize
-    # simple map: [-60..0] -> [0..1]
     scaled=$(awk -v x="$v" 'BEGIN{ s=(x+60)/60; if(s<0)s=0; if(s>1)s=1; printf("%.2f",s)}')
     ch="░"
     awk -v s="$scaled" 'BEGIN{
@@ -336,44 +327,35 @@ make_wave_snippet() {
       else if(s>0.30)print "▒";
       else print "░";
     }' | read -r ch
-    out="$out$ch"
-    idx=$((idx+1))
-    [ $idx -ge 60 ] && break
+    out="$out$ch"; idx=$((idx+1)); [ $idx -ge 60 ] && break
   done
-  # pad to 60
-  local pad=$((60 - idx))
-  [ $pad -gt 0 ] && out="$out$(printf "%0.s░" $(seq 1 $pad))"
+  local pad=$((60 - idx)); [ $pad -gt 0 ] && out="$out$(printf "%0.s░" $(seq 1 $pad))"
   echo "$out"
 }
 
-# ===================== Download one with artwork + waveform =====================
+# ===================== Download one =====================
 download_one() {
   local query="$1" dest="$2" name="$3" cover_url="$4"
   local parent; parent="$(dirname "$dest")"
   mkdir -p "$parent"
   local tmpl="${parent}/%(title)s.%(ext)s"
 
+  track_glow "$name"
+
   local q1="$query"
   local q2="${query/, / }"
   local cover_file=""
-
-  # Neon banner on track start
-  banner_sweep
 
   if [ -n "${cover_url:-}" ]; then
     cover_file="$(download_cover_to_tmp "$cover_url")"
     [ -n "$cover_file" ] || warn "cover fetch failed for: $name"
   fi
 
-  # temp combine path to draw waveform from
-  local latest=""
-  local wave=""
-
+  local latest="" wave=""
   for q in "$q1" "$q2"; do
     if yt-dlp --newline -q --default-search ytsearch -f "bestaudio/best" -o "$tmpl" "ytsearch1:${q}" 2>/dev/null | \
        while IFS= read -r ln; do
          if [[ "$ln" == "[download]"* ]]; then
-           # try to pick a candidate file once to build a waveform preview
            if [ -z "$latest" ]; then latest="$(ls -t "${parent}"/* 2>/dev/null | head -n1 || true)"; fi
            if [ -n "$latest" ] && [ -z "$wave" ]; then wave="$(make_wave_snippet "$latest" || echo "")"; fi
            print_progress_top "$name" "$ln" "$wave"
@@ -385,8 +367,7 @@ download_one() {
         clear_progress_top
         if [ -n "$cover_file" ]; then
           ffmpeg -y -hide_banner -loglevel error \
-            -i "$latest" \
-            -i "$cover_file" \
+            -i "$latest" -i "$cover_file" \
             -map 0:a:0 -map 1:v:0 \
             -c:a libmp3lame -b:a 320k \
             -id3v2_version 3 \
@@ -396,12 +377,9 @@ download_one() {
             "$dest"
         else
           ffmpeg -y -hide_banner -loglevel error \
-            -i "$latest" \
-            -c:a libmp3lame -b:a 320k \
-            "$dest"
+            -i "$latest" -c:a libmp3lame -b:a 320k "$dest"
         fi
-        rm -f -- "$latest"
-        [ -n "$cover_file" ] && rm -f -- "$cover_file"
+        rm -f -- "$latest"; [ -n "$cover_file" ] && rm -f -- "$cover_file"
         ok "$dest"
         return 0
       fi
@@ -414,6 +392,71 @@ download_one() {
   return 1
 }
 
+# ===================== Stage 4: Sampler + Epilogue =====================
+# Build 60s sampler: N=6 clips, each 10s, crossfade 2s, starting 30s in.
+build_sampler() {
+  local -a files=("$@")
+  local count="${#files[@]}"; [ "$count" -lt 2 ] && { warn "sampler: need at least 2 tracks"; return 0; }
+  local N=6 CLIP=10 START=30 XFADE=2
+  [ "$count" -lt "$N" ] && N="$count"
+  local tmpdir; tmpdir="$(mktemp -d)"
+  local clips=() i=0
+  while [ $i -lt $N ]; do
+    local src="${files[$i]}"; local clip="$tmpdir/clip_$i.mp3"
+    ffmpeg -y -hide_banner -loglevel error -ss $START -t $CLIP -i "$src" -af "loudnorm=I=-14:LRA=11:TP=-1.5" -c:a libmp3lame -b:a 320k "$clip"
+    clips+=("$clip"); i=$((i+1))
+  done
+  local out="$DOWNLOADS_DIR/Sampler_$(timestamp).mp3"
+  # Ladder crossfade
+  local current="${clips[0]}" k=1
+  while [ $k -lt $N ]; do
+    local next="${clips[$k]}" comb="$tmpdir/xf_$k.mp3"
+    ffmpeg -y -hide_banner -loglevel error -i "$current" -i "$next" \
+      -filter_complex "acrossfade=d=$XFADE:curve1=tri:curve2=tri" \
+      -c:a libmp3lame -b:a 320k "$comb"
+    current="$comb"; k=$((k+1))
+  done
+  mv "$current" "$out"
+  rm -rf "$tmpdir"
+  ok "Sampler created: $out"
+}
+
+# Build 15s epilogue video with banner + scrolling track list + audio bed.
+build_epilogue() {
+  local -a files=("$@"); local count="${#files[@]}"
+  [ "$count" -lt 1 ] && { warn "epilogue: need at least 1 track"; return 0; }
+
+  local out="$DOWNLOADS_DIR/Epilogue_$(timestamp).mp4"
+  local list_txt="$(mktemp)"; local i=0
+  echo "Downloaded tracks:" > "$list_txt"
+  for f in "${files[@]}"; do
+    echo "• $(basename "$f")" >> "$list_txt"
+  done
+
+  # Pick last file for ambient bed; take last 15s with fade
+  local bed="${files[$((count-1))]}"
+  local bed_aac="$(mktemp --suffix=.m4a)"
+  ffmpeg -y -hide_banner -loglevel error -sseof -15 -i "$bed" -af "afade=in:st=0:d=2,afade=out:st=13:d=2,volume=0.7" -c:a aac -b:a 192k "$bed_aac"
+
+  # Build a 1080p 15s canvas with banner and scrolling text
+  # Find a monospace font
+  local FONT="$(fc-match -f '%{file}\n' monospace 2>/dev/null | head -n1 || echo '')"
+  local drawfont=""
+  [ -n "$FONT" ] && drawfont=":fontfile='$FONT'"
+
+  # Escape banner for drawtext
+  local banner_esc="$(echo "$BANNER_TXT" | sed "s/'/\\\'/g" | sed ':a;N;$!ba;s/\n/\\\\n/g')"
+
+  ffmpeg -y -hide_banner -loglevel error -f lavfi -t 15 -i "color=c=black:s=1920x1080:r=30" \
+    -i "$bed_aac" \
+    -vf "drawtext=fontsize=38:text='$banner_esc'$drawfont:x=(w-text_w)/2:y=50:fontcolor=white:shadowx=2:shadowy=2,\
+         drawtext=fontsize=28:textfile='$list_txt'$drawfont:x=60:y=h-(t*120):fontcolor=white:shadowx=2:shadowy=2" \
+    -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 192k "$out"
+
+  rm -f "$list_txt" "$bed_aac"
+  ok "Epilogue video: $out"
+}
+
 # ===================== Resolve + run =====================
 choose_artist_top_n() {
   echo
@@ -424,9 +467,7 @@ choose_artist_top_n() {
   printf "%s" "Select [1-3]: "
   read -r sel
   case "$sel" in
-    1) echo 10 ;;
-    2) echo 25 ;;
-    *) echo 1000 ;;
+    1) echo 10 ;; 2) echo 25 ;; *) echo 1000 ;;
   esac
 }
 
@@ -439,12 +480,10 @@ resolve_tracks() {
     playlist) out="$(fetch_playlist_tracks "$id" "$token")" ;;
     album)    out="$(fetch_album_tracks "$id" "$token")" ;;
     track)    out="$(fetch_track "$id" "$token")" ;;
-    artist)
-      local all topn; all="$(fetch_artist_top_tracks "$id" "$token" "$MARKET")"; topn="$(choose_artist_top_n)"; out="$(echo "$all" | jq -c ".[0:$topn]")"
-      ;;
+    artist)   local all topn; all="$(fetch_artist_top_tracks "$id" "$token" "$MARKET")"; topn="$(choose_artist_top_n)"; out="$(echo "$all" | jq -c ".[0:$topn]")" ;;
     *) die "Unsupported Spotify type: $type" ;;
   esac
-  echo "$out" | jq -e 'type=="array"' >/dev/null 2>&1 || die "Spotify returned unexpected data (not a track list). If private, make it public."
+  echo "$out" | jq -e 'type=="array"' >/dev/null 2>&1 || die "Spotify returned unexpected data."
   printf "%s" "$out"
 }
 
@@ -454,17 +493,16 @@ process_spotify_url() {
   local tracks; tracks="$(resolve_tracks "$url")"
   local len; len="$(echo "$tracks" | jq 'length')"
   [ "$len" -gt 0 ] || die "No tracks found."
-
   print_tracks "$tracks"
 
   local type; type="$(parse_spotify_type_id "$url" | awk '{print $1}')"
   local folder="Playlist"; case "$type" in album) folder="Album" ;; track) folder="Single" ;; artist) folder="ArtistTop" ;; esac
 
   printf "%s" "Proceed to download as MP3 320k? [y/N] "
-  read -r ans
-  case "${ans,,}" in y|yes) ;; *) echo "Cancelled."; return 0;; esac
+  read -r ans; case "${ans,,}" in y|yes) ;; *) echo "Cancelled."; return 0;; esac
 
   local token; token="$(spotify_get_token "$SPOTIFY_CLIENT_ID" "$SPOTIFY_CLIENT_SECRET")"
+  local -a saved=()
 
   for i in $(seq 0 $((len-1))); do
     local title artists primary dest name q track_id cover_url dur
@@ -479,48 +517,46 @@ process_spotify_url() {
     name="$(sanitize_filename "$title")"
 
     if [ "$SKIP_EXISTING" = "1" ] && [ -f "$dest" ]; then
-      ok "skip (exists): $dest"
-      continue
+      ok "skip (exists): $dest"; saved+=("$dest"); continue
     fi
 
     hype_moment "$title" "$dur"
 
-    cover_url=""
-    if [ -n "$track_id" ]; then
-      cover_url="$(get_cover_by_track_id "$track_id" "$token" || echo "")"
-    fi
+    cover_url=""; [ -n "$track_id" ] && cover_url="$(get_cover_by_track_id "$track_id" "$token" || echo "")"
 
-    download_one "$q" "$dest" "$name" "$cover_url" || echo "[fail] ${title} — ${artists}" >&2
+    if download_one "$q" "$dest" "$name" "$cover_url"; then
+      saved+=("$dest")
+    fi
   done
+
   ok "Saved under: $DOWNLOADS_DIR/$folder"
+
+  # Stage 4 prompts
+  if [ "${#saved[@]}" -ge 2 ]; then
+    printf "%s" "Create 60s crossfade sampler? [y/N] "
+    read -r mk; [[ "${mk,,}" =~ ^y ]] && build_sampler "${saved[@]}"
+  fi
+  if [ "${#saved[@]}" -ge 1 ]; then
+    printf "%s" "Create 15s epilogue video? [y/N] "
+    read -r mv; [[ "${mv,,}" =~ ^y ]] && build_epilogue "${saved[@]}"
+  fi
 }
 
 menu() {
   while true; do
     clear || true
-    banner_sweep
-    title "BSpot (Spotify-only, MP3 with cover art + Live Waveform)"
+    banner_sweep_once
+    title "BSpot (Spotify-only, MP3 with cover art + Waveform + Sampler/Epilogue)"
     echo "  1) Paste a Spotify link"
     echo "  2) Quit"
     line
     printf "%s" "Select: "
     read -r choice
     case "$choice" in
-      1)
-        printf "%s" "Paste Spotify URL: "
-        read -r url
-        is_spotify "$url" || { warn "Not a Spotify link."; sleep 1; continue; }
-        process_spotify_url "$url"
-        printf "%s" "Press Enter to continue..."
-        read -r _ ;;
-      2|q|Q)
-        exit 0 ;;
-      -h|--help)
-        usage
-        printf "%s" "Press Enter to continue..."
-        read -r _ ;;
-      *)
-        warn "Invalid choice"; sleep 0.7 ;;
+      1) printf "%s" "Paste Spotify URL: "; read -r url; is_spotify "$url" || { warn "Not a Spotify link."; sleep 1; continue; }; process_spotify_url "$url"; printf "%s" "Press Enter to continue..."; read -r _ ;;
+      2|q|Q) exit 0 ;;
+      -h|--help) usage; printf "%s" "Press Enter to continue..."; read -r _ ;;
+      *) warn "Invalid choice"; sleep 0.7 ;;
     esac
   done
 }
@@ -535,10 +571,7 @@ main() {
   first_time_config
   load_config
   if [ $# -gt 0 ]; then
-    local url="$1"
-    is_spotify "$url" || die "This program supports only Spotify URLs."
-    process_spotify_url "$url"
-    exit 0
+    local url="$1"; is_spotify "$url" || die "This program supports only Spotify URLs."; process_spotify_url "$url"; exit 0
   fi
   menu
 }
