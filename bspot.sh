@@ -1,26 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# BSpot (Spotify-only) — simple UI, MP3 with embedded cover art
-# Supports: playlist, album, track, artist (top tracks)
-# Output: MP3 320 kbps with album art embedded (if available)
-# Config: ~/.config/bspot/config (reused; never re-asked if present)
-# Removed menu options 2/3/4 as requested. Only:
-#   1) Paste a Spotify link
-#   2) Quit
+# BSpot (Spotify-only) — MP3 320k with embedded cover art
+# - Entities: playlist, album, track, artist (top tracks)
+# - Beautiful menu with ASCII banner
+# - Live single-line progress bar on top with current song name
+# - Config is reused from ~/.config/bspot/config (never re-asks if present)
 
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
 
-# ---------- UI helpers (no external deps beyond tput) ----------
+# ===================== UI helpers =====================
 is_tty() { [ -t 1 ]; }
 cc() { is_tty && tput setaf "$1" || true; }
 cb() { is_tty && tput bold || true; }
 cr() { is_tty && tput sgr0 || true; }
 line() { printf "%s\n" "────────────────────────────────────────────────────────"; }
 bar()  { printf "%s\n" "========================================================"; }
-title() { bar; printf "  %s\n" "$(cb)$(cc 6)$1$(cr)"; bar; }
 
+banner() {
+cat <<'BSPOT'
+██████╗░░██████╗██████╗░░█████╗░████████╗
+██╔══██╗██╔════╝██╔══██╗██╔══██╗╚══██╔══╝
+██████╦╝╚█████╗░██████╔╝██║░░██║░░░██║░░░
+██╔══██╗░╚═══██╗██╔═══╝░██║░░██║░░░██║░░░
+██████╦╝██████╔╝██║░░░░░╚█████╔╝░░░██║░░░
+╚═════╝░╚═════╝░╚═╝░░░░░░╚════╝░░░░╚═╝░░░
+BSPOT
+}
+
+title() { bar; printf "  %s\n" "$(cb)$(cc 6)$1$(cr)"; bar; }
 die(){ echo "$(cc 1)Error:$(cr) $*" >&2; exit 1; }
 warn(){ echo "$(cc 3)[warn]$(cr) $*" >&2; }
 ok(){   echo "$(cc 2)[ok]$(cr) $*"; }
@@ -43,7 +52,7 @@ require_cmds() {
   done
 }
 
-# ---------- Config ----------
+# ===================== Config =====================
 first_time_config() {
   mkdir -p "$CONFIG_DIR"
   if [ ! -f "$CONFIG_FILE" ]; then
@@ -57,7 +66,6 @@ first_time_config() {
       echo "YTDLP_SEARCH_COUNT=\"1\""
       echo "MARKET=\"US\""
       echo "SKIP_EXISTING=\"1\""
-      echo "CONCURRENCY=\"1\""   # fixed single download at a time (simpler UI)
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
   fi
@@ -72,10 +80,9 @@ load_config() {
   : "${YTDLP_SEARCH_COUNT:=1}"
   : "${MARKET:=US}"
   : "${SKIP_EXISTING:=1}"
-  : "${CONCURRENCY:=1}"
 }
 
-# ---------- Helpers ----------
+# ===================== Helpers =====================
 sanitize_filename() {
   local name="$*"
   name="${name//\//_}"; name="${name//\\/ _}"; name="${name//:/_}"
@@ -107,7 +114,7 @@ parse_spotify_type_id() {
   fi
 }
 
-# ---------- Network ----------
+# ===================== Network =====================
 curl_with_status() { curl -sS "$@" -w '\n%{http_code}'; }
 expect_json() { echo "$1" | jq -e '.' >/dev/null 2>&1; }
 retry_once() { "$@" || { sleep 0.6; "$@"; }; }
@@ -139,7 +146,7 @@ curl_json() {
   printf "%s" "$body"
 }
 
-# ---------- Normalizers (include track_id for cover art) ----------
+# ===================== Normalizers with track_id (for cover) =====================
 fetch_playlist_tracks() {
   local id="$1" token="$2"
   local url="https://api.spotify.com/v1/playlists/${id}/tracks?limit=100"
@@ -163,8 +170,8 @@ fetch_playlist_tracks() {
 
 fetch_album_tracks() {
   local id="$1" token="$2"
-  local album_meta; album_meta="$(curl_json "https://api.spotify.com/v1/albums/${id}" "$token")"
-  local album_name; album_name="$(echo "$album_meta" | jq -r '.name')"
+  local meta; meta="$(curl_json "https://api.spotify.com/v1/albums/${id}" "$token")"
+  local album_name; album_name="$(echo "$meta" | jq -r '.name')"
   local url="https://api.spotify.com/v1/albums/${id}/tracks?limit=50"
   local items='[]'
   while [ -n "$url" ] && [ "$url" != "null" ]; do
@@ -209,7 +216,7 @@ fetch_artist_top_tracks() {
   }]'
 }
 
-# ---------- Cover art ----------
+# ===================== Cover art =====================
 get_cover_by_track_id() {
   local track_id="$1" token="$2"
   local body; body="$(curl_json "https://api.spotify.com/v1/tracks/${track_id}" "$token")" || return 0
@@ -227,7 +234,7 @@ download_cover_to_tmp() {
   fi
 }
 
-# ---------- Presentation ----------
+# ===================== Presentation =====================
 print_tracks() {
   local tracks="$1"
   local n; n="$(echo "$tracks" | jq 'length')"
@@ -242,25 +249,37 @@ build_dest() {
   printf "%s/%s/%s\n" "$DOWNLOADS_DIR" "$(sanitize_filename "$folder")" "$(sanitize_filename "${title} - ${artists}").mp3"
 }
 
-# ---------- Progress parsing ----------
-render_progress() {
+# ===================== Progress bar =====================
+# Single top-line progress bar with song name
+print_progress_top() {
   local name="$1" line="$2"
-  local pct size speed eta
+  local pct speed eta
   pct="$(sed -n 's/.*\[\s*download\s*\]\s*\([0-9.]\+%\).*/\1/p' <<< "$line" | tail -n1 || true)"
   speed="$(sed -n 's/.*at\s\([0-9.]\+[KMG]iB\/s\).*/\1/p' <<< "$line" | tail -n1 || true)"
   eta="$(sed -n 's/.*ETA\s\([0-9:]\+\).*/\1/p' <<< "$line" | tail -n1 || true)"
-  local pbar
-  if [[ "$pct" =~ ^([0-9]+) ]]; then
-    local p="${BASH_REMATCH[1]}"
-    local w=28 filled=$(( p * w / 100 )) empty=$(( w - filled ))
-    pbar="$(printf "%0.s#" $(seq 1 $filled))$(printf "%0.s-" $(seq 1 $empty))"
-  else
-    pbar="----------------------------"
-  fi
-  printf "\r$(cc 6)[%s]$(cr) [%s] %s %s" "$name" "$pbar" "${pct:-..%}" "${eta:+ETA $eta ${speed:+| $speed}}"
+
+  local p=0; [[ "$pct" =~ ^([0-9]+) ]] && p="${BASH_REMATCH[1]}"
+  local w=40 filled=$(( p * w / 100 )) empty=$(( w - filled ))
+  local pbar="$(printf "%0.s█" $(seq 1 $filled))$(printf "%0.s░" $(seq 1 $empty))"
+
+  # Move cursor to top line: save cursor, go to line 1, print, restore
+  tput sc >/dev/null 2>&1 || true
+  tput cup 0 0 >/dev/null 2>&1 || true
+  printf "%s\r" "$(cb)$(cc 6)♪ $(sanitize_filename "$name")$(cr)"
+  printf "\n[%s] %3s  %s  %s\r" "$pbar" "${pct:-..%}" "${eta:+ETA $eta}" "${speed:-}"
+  tput rc >/dev/null 2>&1 || true
 }
 
-# ---------- Download one with artwork ----------
+clear_progress_top() {
+  tput sc >/dev/null 2>&1 || true
+  tput cup 0 0 >/dev/null 2>&1 || true
+  printf "%-80s\r" ""
+  tput cup 1 0 >/dev/null 2>&1 || true
+  printf "%-80s\r" ""
+  tput rc >/dev/null 2>&1 || true
+}
+
+# ===================== Download one with artwork =====================
 download_one() {
   local query="$1" dest="$2" name="$3" cover_url="$4"
   local parent; parent="$(dirname "$dest")"
@@ -278,12 +297,12 @@ download_one() {
 
   for q in "$q1" "$q2"; do
     if yt-dlp --newline -q --default-search ytsearch -f "bestaudio/best" -o "$tmpl" "ytsearch1:${q}" 2>/dev/null | while IFS= read -r ln; do
-         [[ "$ln" == "[download]"* ]] && render_progress "$name" "$ln"
+         [[ "$ln" == "[download]"* ]] && print_progress_top "$name" "$ln"
        done
     then
       local latest; latest="$(ls -t "${parent}"/* 2>/dev/null | head -n1 || true)"
       if [ -n "$latest" ]; then
-        printf "\r%*s\r" 100 ""
+        clear_progress_top
         if [ -n "$cover_file" ]; then
           ffmpeg -y -hide_banner -loglevel error \
             -i "$latest" \
@@ -309,13 +328,13 @@ download_one() {
     fi
   done
 
-  printf "\r%*s\r" 100 ""
+  clear_progress_top
   [ -n "$cover_file" ] && rm -f -- "$cover_file"
   warn "no source matched for: $name"
   return 1
 }
 
-# ---------- Resolve + run ----------
+# ===================== Resolve + run =====================
 choose_artist_top_n() {
   echo
   echo "Choose artist top-tracks size:"
@@ -365,8 +384,10 @@ process_spotify_url() {
   read -r ans
   case "${ans,,}" in y|yes) ;; *) echo "Cancelled."; return 0;; esac
 
+  local token; token="$(spotify_get_token "$SPOTIFY_CLIENT_ID" "$SPOTIFY_CLIENT_SECRET")"
+
   for i in $(seq 0 $((len-1))); do
-    local title artists primary dest name q track_id cover_url token
+    local title artists primary dest name q track_id cover_url
     title="$(echo "$tracks" | jq -r ".[$i].title")"
     artists="$(echo "$tracks" | jq -r ".[$i].artists | join(\", \")")"
     primary="$(echo "$tracks" | jq -r ".[$i].artists[0]")"
@@ -383,8 +404,6 @@ process_spotify_url() {
 
     cover_url=""
     if [ -n "$track_id" ]; then
-      # re-use token from the earlier step
-      token="$(spotify_get_token "$SPOTIFY_CLIENT_ID" "$SPOTIFY_CLIENT_SECRET")"
       cover_url="$(get_cover_by_track_id "$track_id" "$token" || echo "")"
     fi
 
@@ -396,6 +415,7 @@ process_spotify_url() {
 menu() {
   while true; do
     clear || true
+    banner
     title "BSpot (Spotify-only, MP3 with cover art)"
     echo "  1) Paste a Spotify link"
     echo "  2) Quit"
