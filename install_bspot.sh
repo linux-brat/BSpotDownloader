@@ -1,26 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Linux-only installer for BSpotDownloader
+# BSpot (Spotify-only) installer for Linux
 # - Cleans previous install (launcher + local cache) silently
 # - Installs dependencies if missing
 # - Installs launcher that always fetches latest bspot.sh from master
 # - Preserves ~/.config/bspot/config
-#
-# Repo raw URL (fixed):
+
+# Change this to your repo path if different:
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/linux-brat/BSpotDownloader/master/bspot.sh"
 
-# Paths
 BIN_DIR="/usr/local/bin"
 LAUNCHER_PATH="${BIN_DIR}/bspot"
-ALIAS_PATH="${BIN_DIR}/bspotdownloader"
 APP_HOME="${HOME}/.local/share/bspot"
 APP_SCRIPT="${APP_HOME}/bspot.sh"
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
 
-die(){ echo "Error: $*" >&2; exit 1; }
 have_cmd(){ command -v "$1" >/dev/null 2>&1; }
+die(){ echo "Error: $*" >&2; exit 1; }
 
 need_sudo() {
   if [ ! -w "$BIN_DIR" ]; then
@@ -36,22 +34,22 @@ install_pkg_linux() {
     sudo apt-get update -y >/dev/null
     sudo apt-get install -y "$@" >/dev/null
   elif have_cmd dnf; then
-    sudo dnf install -y "$@" -q
+    sudo dnf install -y -q "$@"
   elif have_cmd yum; then
-    sudo yum install -y "$@" -q
+    sudo yum install -y -q "$@"
   elif have_cmd pacman; then
     sudo pacman -Sy --noconfirm "$@" >/dev/null
   elif have_cmd zypper; then
     sudo zypper install -y "$@" >/dev/null
+  else
+    die "Please install packages manually: $*"
   fi
 }
 
 ensure_dep() {
   local cmd="$1" pkg="$2"
-  if ! have_cmd "$cmd"; then
-    install_pkg_linux "$pkg" || true
-    have_cmd "$cmd" || die "Missing dependency: $cmd"
-  fi
+  have_cmd "$cmd" || install_pkg_linux "$pkg"
+  have_cmd "$cmd" || die "Missing dependency: $cmd"
 }
 
 ensure_deps() {
@@ -60,7 +58,7 @@ ensure_deps() {
   ensure_dep ffmpeg ffmpeg
   if ! have_cmd yt-dlp; then
     if have_cmd apt-get; then sudo apt-get install -y yt-dlp >/dev/null || true
-    elif have_cmd dnf; then sudo dnf install -y yt-dlp -q || true
+    elif have_cmd dnf; then sudo dnf install -y -q yt-dlp || true
     elif have_cmd pacman; then sudo pacman -Sy --noconfirm yt-dlp >/dev/null || true
     elif have_cmd zypper; then sudo zypper install -y yt-dlp >/dev/null || true
     fi
@@ -75,7 +73,7 @@ ensure_deps() {
 
 cleanup_old() {
   rm -f "${APP_SCRIPT}" 2>/dev/null || true
-  $SUDO rm -f "${LAUNCHER_PATH}" "${ALIAS_PATH}" 2>/dev/null || true
+  $SUDO rm -f "${LAUNCHER_PATH}" 2>/dev/null || true
 }
 
 write_launcher() {
@@ -84,7 +82,7 @@ write_launcher() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-# BSpotDownloader launcher (Linux) — fixed raw URL (master)
+# BSpot (Spotify-only) launcher for Linux — fixed raw URL (master)
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/linux-brat/BSpotDownloader/master/bspot.sh"
 
 APP_HOME="${HOME}/.local/share/bspot"
@@ -107,7 +105,7 @@ fetch_fresh() {
   local ts; ts="$(mktemp)"
   ( curl -fsSL "$RAW_SCRIPT_URL" -o "$ts" ) &
   local cpid=$!
-  spinner "$cpid" "Updating BSpotDownloader"
+  spinner "$cpid" "Updating BSpot"
   wait "$cpid" || { echo "Cannot fetch: $RAW_SCRIPT_URL"; exit 1; }
   chmod +x "$ts"
   mv "$ts" "$APP_SCRIPT"
@@ -115,20 +113,20 @@ fetch_fresh() {
 
 usage() {
   cat <<EOF
-BSpotDownloader launcher
+BSpot (Spotify-only) launcher
 
 Usage:
   bspot                 Launch the app menu
-  bspot <url>           Process a single URL directly
+  bspot <spotify-url>   Process a single Spotify URL directly
   bspot --uninstall     Remove launcher and cache; ask to remove config
-  bspot -h | --help     Show this help
+  bspot -h | --help     Show help
 EOF
 }
 
 cmd_uninstall() {
-  echo "Uninstalling BSpotDownloader…"
+  echo "Uninstalling BSpot…"
   if [ -w "/usr/local/bin" ]; then SUDO=""; else command -v sudo >/dev/null 2>&1 && SUDO="sudo" || SUDO=""; fi
-  $SUDO rm -f /usr/local/bin/bspot /usr/local/bin/bspotdownloader 2>/dev/null || true
+  $SUDO rm -f /usr/local/bin/bspot 2>/dev/null || true
   rm -rf "$APP_HOME"
   if [ -d "$CONFIG_DIR" ]; then
     read -r -p "Remove user config at $CONFIG_DIR? [y/N] " ans
@@ -152,18 +150,18 @@ main "$@"
 LAUNCHER
   chmod +x "$tmp"
   $SUDO mv "$tmp" "$LAUNCHER_PATH"
-  $SUDO ln -sf "$LAUNCHER_PATH" "$ALIAS_PATH"
 }
 
 ensure_user_config() {
   mkdir -p "$CONFIG_DIR"
   if [ ! -f "$CONFIG_FILE" ]; then
+    # single, first-time prompt (never prompted again if file exists)
     read -r -p "Spotify Client ID: " cid
     read -r -p "Spotify Client Secret: " csec
     {
       echo "SPOTIFY_CLIENT_ID=\"$cid\""
       echo "SPOTIFY_CLIENT_SECRET=\"$csec\""
-      echo "DOWNLOADS_DIR=\"$HOME/Downloads/BSpotDownloader\""
+      echo "DOWNLOADS_DIR=\"$HOME/Downloads/BSpot\""
       echo "YTDLP_SEARCH_COUNT=\"1\""
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
