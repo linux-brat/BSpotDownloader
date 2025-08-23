@@ -2,22 +2,19 @@
 set -euo pipefail
 
 # Linux-only installer for BSpotDownloader
-# - Installs deps via common package managers
-# - Installs /usr/local/bin/bspot (self-updating launcher) and alias bspotdownloader
-# - Creates user config at ~/.config/bspot/config (prompts only if missing)
+# Installs deps, a self-updating launcher (/usr/local/bin/bspot + alias),
+# and creates ~/.config/bspot/config on first setup.
 
-# ====== EDIT THESE FOR YOUR REPO ======
+# ====== CONFIGURE FOR YOUR REPO ======
 GITHUB_OWNER="linux-brat"
 GITHUB_REPO="BSpotDownloader"
-GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/master"
-# ======================================
+DEFAULT_BRANCH="master"   # will fallback to main if needed
+# =====================================
 
 BIN_DIR="/usr/local/bin"
 LAUNCHER_PATH="${BIN_DIR}/bspot"
 ALIAS_PATH="${BIN_DIR}/bspotdownloader"
 APP_HOME="${HOME}/.local/share/bspot"
-APP_SCRIPT="${APP_HOME}/bspot.sh"
-APP_VERSION_FILE="${APP_HOME}/VERSION"
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
 
@@ -47,16 +44,16 @@ install_pkg_linux() {
   elif have_cmd zypper; then
     sudo zypper install -y "$@"
   else
-    say "Could not auto-install packages. Please install manually: $*"
+    say "Auto install not supported; please install manually: $*"
   fi
 }
 
 ensure_dep() {
   local cmd="$1" pkg="$2"
   if ! have_cmd "$cmd"; then
-    say "Installing dependency: $cmd"
+    say "Installing: $cmd"
     install_pkg_linux "$pkg" || true
-    have_cmd "$cmd" || die "Missing dependency after attempt: $cmd"
+    have_cmd "$cmd" || die "Missing dependency: $cmd"
   fi
 }
 
@@ -64,24 +61,16 @@ ensure_deps() {
   ensure_dep curl curl
   ensure_dep jq jq
   ensure_dep ffmpeg ffmpeg
-  # yt-dlp can be from package manager or pip
   if ! have_cmd yt-dlp; then
     say "Installing yt-dlp"
-    if have_cmd apt-get; then
-      sudo apt-get install -y yt-dlp || true
-    elif have_cmd dnf; then
-      sudo dnf install -y yt-dlp || true
-    elif have_cmd pacman; then
-      sudo pacman -Sy --noconfirm yt-dlp || true
-    elif have_cmd zypper; then
-      sudo zypper install -y yt-dlp || true
+    if have_cmd apt-get; then sudo apt-get install -y yt-dlp || true
+    elif have_cmd dnf; then sudo dnf install -y yt-dlp || true
+    elif have_cmd pacman; then sudo pacman -Sy --noconfirm yt-dlp || true
+    elif have_cmd zypper; then sudo zypper install -y yt-dlp || true
     fi
     if ! have_cmd yt-dlp; then
-      if have_cmd pipx; then
-        pipx install yt-dlp || pipx upgrade yt-dlp || true
-      elif have_cmd pip3; then
-        pip3 install --user -U yt-dlp
-        export PATH="$HOME/.local/bin:$PATH"
+      if have_cmd pipx; then pipx install yt-dlp || pipx upgrade yt-dlp || true
+      elif have_cmd pip3; then pip3 install --user -U yt-dlp; export PATH="$HOME/.local/bin:$PATH"
       fi
     fi
     have_cmd yt-dlp || die "yt-dlp is required"
@@ -89,108 +78,107 @@ ensure_deps() {
 }
 
 write_launcher() {
-  local tmp="$(mktemp)"
+  local tmp
+  tmp="$(mktemp)"
   cat > "$tmp" <<'LAUNCHER'
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Self-updating launcher for BSpotDownloader (Linux)
-# Keeps a cached copy in ~/.local/share/bspot and updates it automatically.
+# BSpotDownloader self-updating launcher (Linux)
 
-OWNER="YOURUSER"
-REPO="YOURREPO"
-RAW_BASE="https://raw.githubusercontent.com/${OWNER}/${REPO}/master"
+OWNER="linux-brat"
+REPO="BSpotDownloader"
+BRANCH_PREFERRED="master"
+BRANCH_FALLBACK="main"
+
+RAW_BASE_PREF="https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH_PREFERRED}"
+RAW_BASE_FALL="https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH_FALLBACK}"
 
 APP_HOME="${HOME}/.local/share/bspot"
 APP_SCRIPT="${APP_HOME}/bspot.sh"
 LOCAL_VER_FILE="${APP_HOME}/VERSION"
-REMOTE_VER_URL="${RAW_BASE}/VERSION"
-REMOTE_SCRIPT_URL="${RAW_BASE}/bspot.sh"
 
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
 
-# Update policy: always try update if online and remote version differs.
-# Set BSPOT_UPDATE=always to force fetch every run even if version same.
-UPDATE_POLICY="${BSPOT_UPDATE:-auto}"  # auto|always|never
-
 have_cmd(){ command -v "$1" >/dev/null 2>&1; }
 
-get_remote_version() {
-  curl -fsSL "$REMOTE_VER_URL" 2>/dev/null || echo ""
+# Pick raw base that exists (fixes curl 404 when branch differs)
+pick_raw_base() {
+  if curl -fsSL "${RAW_BASE_PREF}/VERSION" >/dev/null 2>&1; then
+    echo "$RAW_BASE_PREF"
+  elif curl -fsSL "${RAW_BASE_FALL}/VERSION" >/dev/null 2>&1; then
+    echo "$RAW_BASE_FALL"
+  else
+    echo ""
+  fi
 }
 
-get_local_version() {
-  [ -f "$LOCAL_VER_FILE" ] && cat "$LOCAL_VER_FILE" || echo ""
+get_remote_version() {
+  local base="$1"
+  curl -fsSL "${base}/VERSION" 2>/dev/null || echo ""
 }
 
 do_update() {
+  local base="$1"
   mkdir -p "$APP_HOME"
-  local tmp_script tmp_ver
-  tmp_script="$(mktemp)"
-  tmp_ver="$(mktemp)"
-  curl -fsSL "$REMOTE_SCRIPT_URL" -o "$tmp_script"
-  curl -fsSL "$REMOTE_VER_URL" -o "$tmp_ver"
-  chmod +x "$tmp_script"
-  mv "$tmp_script" "$APP_SCRIPT"
-  mv "$tmp_ver" "$LOCAL_VER_FILE"
+  local ts tv
+  ts="$(mktemp)"; tv="$(mktemp)"
+  curl -fsSL "${base}/bspot.sh" -o "$ts"
+  curl -fsSL "${base}/VERSION" -o "$tv"
+  chmod +x "$ts"
+  mv "$ts" "$APP_SCRIPT"
+  mv "$tv" "$LOCAL_VER_FILE"
 }
 
 ensure_latest() {
   mkdir -p "$APP_HOME"
-  if [ "$UPDATE_POLICY" = "always" ]; then
-    if curl -fsSL "$REMOTE_SCRIPT_URL" >/dev/null 2>&1; then
-      do_update || true
-    fi
-  elif [ "$UPDATE_POLICY" = "never" ]; then
-    [ -f "$APP_SCRIPT" ] || do_update
-  else
-    # auto: compare versions if possible
-    local remote localv
-    remote="$(get_remote_version || true)"
-    localv="$(get_local_version || true)"
-    if [ -z "$localv" ] || [ -z "$remote" ] || [ "$remote" != "$localv" ]; then
-      if curl -fsSL "$REMOTE_SCRIPT_URL" >/dev/null 2>&1; then
-        do_update || true
-      fi
-    fi
+  local base; base="$(pick_raw_base)"
+  if [ -z "$base" ]; then
+    # no network or repo not reachable; continue with existing script if present
+    [ -f "$APP_SCRIPT" ] || { echo "Cannot fetch BSpotDownloader and no local copy found."; exit 1; }
+    return
   fi
-  [ -f "$APP_SCRIPT" ] || { echo "BSpot main script missing and update failed."; exit 1; }
+
+  local remote localv
+  remote="$(get_remote_version "$base")"
+  localv="$( [ -f "$LOCAL_VER_FILE" ] && cat "$LOCAL_VER_FILE" || echo "" )"
+  if [ -z "$localv" ] || [ -z "$remote" ] || [ "$remote" != "$localv" ]; then
+    do_update "$base" || true
+  fi
+  [ -f "$APP_SCRIPT" ] || { echo "BSpot main script missing."; exit 1; }
 }
 
-# Ensure config exists but do NOT prompt for credentials here.
-# The main script handles first-time setup interactively when needed.
 mkdir -p "$CONFIG_DIR"
-
 ensure_latest
-
 exec "$APP_SCRIPT" "$@"
 LAUNCHER
-  sed -i "s/YOURUSER/${GITHUB_OWNER}/g" "$tmp"
-  sed -i "s/YOURREPO/${GITHUB_REPO}/g" "$tmp"
+  sed -i "s/linux-brat/${GITHUB_OWNER}/g" "$tmp"
+  sed -i "s/BSpotDownloader/${GITHUB_REPO}/g" "$tmp"
+  sed -i "s/BRANCH_PREFERRED=\"master\"/BRANCH_PREFERRED=\"${DEFAULT_BRANCH}\"/" "$tmp"
   chmod +x "$tmp"
   $SUDO mv "$tmp" "$LAUNCHER_PATH"
   $SUDO ln -sf "$LAUNCHER_PATH" "$ALIAS_PATH"
-  say "Installed launcher: $LAUNCHER_PATH and alias: $ALIAS_PATH"
+  say "Installed launcher: $LAUNCHER_PATH (alias: $ALIAS_PATH)"
 }
 
 ensure_user_config() {
   mkdir -p "$CONFIG_DIR"
   if [ ! -f "$CONFIG_FILE" ]; then
-    say "Creating initial config at $CONFIG_FILE"
-    read -r -p "Enter Spotify Client ID: " cid
-    read -r -p "Enter Spotify Client Secret: " csec
+    echo "=== BSpotDownloader first-time setup ==="
+    read -r -p "Spotify Client ID: " cid
+    read -r -p "Spotify Client Secret: " csec
     {
       echo "SPOTIFY_CLIENT_ID=\"$cid\""
       echo "SPOTIFY_CLIENT_SECRET=\"$csec\""
       echo "DOWNLOADS_DIR=\"$HOME/Downloads/BSpotDownloader\""
-      echo "OUTPUT_EXTENSION=\"mp4\""      # force .mp4 container
-      echo "YTDLP_SEARCH_COUNT=\"1\""      # top match by default
-      echo "UPDATE_POLICY=\"auto\""        # auto|always|never (used by main script too)
+      echo "YTDLP_SEARCH_COUNT=\"1\""
+      # No output format here; main script decides based on link type
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
+    say "Saved: $CONFIG_FILE"
   else
-    say "Config exists; credentials will be reused from: $CONFIG_FILE"
+    say "Using existing config: $CONFIG_FILE"
   fi
 }
 
@@ -199,7 +187,7 @@ main() {
   ensure_deps
   write_launcher
   ensure_user_config
-  say "Done. Launch with: bspot  (or: bspotdownloader)"
+  say "Done. Run: bspot"
 }
 
 main "$@"
