@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # BSpotDownloader main app (Linux)
-# UI improvements, MP3/MP4 rules:
+# UI improvements, format rules:
 # - YouTube links -> audio-only MP4
 # - All other links (incl. Spotify-resolved) -> MP3
-# Persistent config is reused automatically.
+# Persistent config reused automatically.
 
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
@@ -46,7 +46,6 @@ load_config() {
   : "${YTDLP_SEARCH_COUNT:=1}"
 }
 
-# ---------- helpers ----------
 border() { printf "%s\n" "=============================================="; }
 title()  { border; printf "  %s\n" "$1"; border; }
 prompt() { printf "%s" "$1"; read -r REPLY; }
@@ -155,7 +154,6 @@ build_dest_path() {
 
 ensure_dir(){ mkdir -p "$1"; }
 
-# YouTube -> MP4; Others -> MP3
 download_search_to_target() {
   local query="$1" dest="$2" ext="$3"
   local parent; parent="$(dirname "$dest")"

@@ -2,19 +2,23 @@
 set -euo pipefail
 
 # Linux-only installer for BSpotDownloader
-# Installs deps, a self-updating launcher (/usr/local/bin/bspot + alias),
-# and creates ~/.config/bspot/config on first setup.
+# - Cleans previous install (launcher + local cache)
+# - Installs dependencies if missing
+# - Installs self-updating launcher and preserves user config
 
-# ====== CONFIGURE FOR YOUR REPO ======
+# ====== REPO SETTINGS ======
 GITHUB_OWNER="linux-brat"
 GITHUB_REPO="BSpotDownloader"
-DEFAULT_BRANCH="master"   # will fallback to main if needed
-# =====================================
+DEFAULT_BRANCH="master"   # change to "main" if repo default changes
+# ===========================
 
+# Paths
 BIN_DIR="/usr/local/bin"
 LAUNCHER_PATH="${BIN_DIR}/bspot"
 ALIAS_PATH="${BIN_DIR}/bspotdownloader"
 APP_HOME="${HOME}/.local/share/bspot"
+APP_SCRIPT="${APP_HOME}/bspot.sh"
+APP_VERSION_FILE="${APP_HOME}/VERSION"
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
 
@@ -77,6 +81,14 @@ ensure_deps() {
   fi
 }
 
+cleanup_old() {
+  say "Cleaning previous install (safe)…"
+  # Remove cached app files (force fresh download)
+  rm -f "${APP_SCRIPT}" "${APP_VERSION_FILE}" 2>/dev/null || true
+  # Remove old launchers (will be recreated)
+  $SUDO rm -f "${LAUNCHER_PATH}" "${ALIAS_PATH}" 2>/dev/null || true
+}
+
 write_launcher() {
   local tmp
   tmp="$(mktemp)"
@@ -99,11 +111,8 @@ APP_SCRIPT="${APP_HOME}/bspot.sh"
 LOCAL_VER_FILE="${APP_HOME}/VERSION"
 
 CONFIG_DIR="${HOME}/.config/bspot"
-CONFIG_FILE="${CONFIG_DIR}/config"
+mkdir -p "$CONFIG_DIR"
 
-have_cmd(){ command -v "$1" >/dev/null 2>&1; }
-
-# Pick raw base that exists (fixes curl 404 when branch differs)
 pick_raw_base() {
   if curl -fsSL "${RAW_BASE_PREF}/VERSION" >/dev/null 2>&1; then
     echo "$RAW_BASE_PREF"
@@ -133,14 +142,12 @@ do_update() {
 
 ensure_latest() {
   mkdir -p "$APP_HOME"
-  local base; base="$(pick_raw_base)"
+  local base remote localv
+  base="$(pick_raw_base)"
   if [ -z "$base" ]; then
-    # no network or repo not reachable; continue with existing script if present
     [ -f "$APP_SCRIPT" ] || { echo "Cannot fetch BSpotDownloader and no local copy found."; exit 1; }
     return
   fi
-
-  local remote localv
   remote="$(get_remote_version "$base")"
   localv="$( [ -f "$LOCAL_VER_FILE" ] && cat "$LOCAL_VER_FILE" || echo "" )"
   if [ -z "$localv" ] || [ -z "$remote" ] || [ "$remote" != "$localv" ]; then
@@ -149,7 +156,6 @@ ensure_latest() {
   [ -f "$APP_SCRIPT" ] || { echo "BSpot main script missing."; exit 1; }
 }
 
-mkdir -p "$CONFIG_DIR"
 ensure_latest
 exec "$APP_SCRIPT" "$@"
 LAUNCHER
@@ -173,7 +179,6 @@ ensure_user_config() {
       echo "SPOTIFY_CLIENT_SECRET=\"$csec\""
       echo "DOWNLOADS_DIR=\"$HOME/Downloads/BSpotDownloader\""
       echo "YTDLP_SEARCH_COUNT=\"1\""
-      # No output format here; main script decides based on link type
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
     say "Saved: $CONFIG_FILE"
@@ -185,6 +190,7 @@ ensure_user_config() {
 main() {
   need_sudo
   ensure_deps
+  cleanup_old
   write_launcher
   ensure_user_config
   say "Done. Run: bspot"
