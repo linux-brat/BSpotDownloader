@@ -2,16 +2,33 @@
 set -euo pipefail
 
 # BSpotDownloader main app (Linux)
-# - YouTube: user chooses video quality (Best, 4K, 2K, 1080p, 720p, 480p)
+# - YouTube: choose MP4 video quality (Best, 4K, 2K, 1080p, 720p, 480p)
 # - Non-YouTube (incl. Spotify-resolved): MP3 audio-only 320k
 # - Persistent config reused automatically
 
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
+APP_HOME="${HOME}/.local/share/bspot"
 
 die(){ echo "Error: $*" >&2; exit 1; }
 say(){ echo "[*] $*"; }
 have_cmd(){ command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+  cat <<EOF
+BSpotDownloader (Linux)
+
+Usage:
+  bspot                 Launch menu
+  bspot <url>           Process a single URL directly
+  bspot -h | --help     Show help
+  bspot --uninstall     Uninstall (handled by launcher)
+
+Rules:
+  - YouTube links: MP4 video at chosen quality (Best/4K/2K/1080p/720p/480p)
+  - Other links & Spotify-resolved: MP3 audio-only 320k, saved under ~/Downloads/BSpotDownloader
+EOF
+}
 
 require_cmds() {
   for c in curl jq yt-dlp ffmpeg; do
@@ -181,7 +198,6 @@ download_youtube_mp4_with_quality() {
   ensure_dir "$outdir"
   local tmpl="${outdir}/%(title)s.%(ext)s"
   echo "[yt] Format: $format_selector"
-  # Merge tracks with ffmpeg, remux to mp4 if needed
   yt-dlp -o "$tmpl" -f "$format_selector" --merge-output-format mp4 "$url"
   echo "[ok] Saved to: $outdir"
 }
@@ -222,7 +238,6 @@ process_url() {
   mkdir -p "$DOWNLOADS_DIR"
 
   if is_youtube "$url"; then
-    # Ask for quality, then download MP4 video
     local fmt outdir
     fmt="$(yt_quality_menu)"
     outdir="${DOWNLOADS_DIR}/YouTube"
@@ -260,7 +275,6 @@ process_url() {
     done
     echo "[done] Saved under: $DOWNLOADS_DIR/$folder"
   else
-    # Non-YouTube direct → MP3
     local outdir="${DOWNLOADS_DIR}/Direct"
     download_direct_to_mp3 "$url" "$outdir"
     echo "[done] Saved under: $outdir"
@@ -278,16 +292,28 @@ menu() {
     case "$REPLY" in
       1) prompt "Paste Spotify/YouTube/etc. URL: "; process_url "$REPLY"; prompt "Press Enter to continue...";;
       2|q|Q) exit 0 ;;
+      -h|--help) usage; prompt "Press Enter to continue...";;
       *) echo "Invalid choice"; sleep 1 ;;
     esac
   done
 }
 
 main() {
+  case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    --uninstall) echo "Please run: bspot --uninstall (handled by launcher)"; exit 0 ;;
+    *) ;;
+  esac
+
   require_cmds
   first_time_config
   load_config
-  if [ $# -gt 0 ]; then process_url "$1"; exit 0; fi
+
+  if [ $# -gt 0 ]; then
+    process_url "$1"
+    exit 0
+  fi
+
   menu
 }
 

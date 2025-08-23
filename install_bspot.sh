@@ -4,13 +4,11 @@ set -euo pipefail
 # Linux-only installer for BSpotDownloader
 # - Cleans previous install (launcher + local cache)
 # - Installs dependencies if missing
-# - Installs a launcher that fetches from fixed raw URLs on master
-# - Preserves user config (~/.config/bspot/config)
-
-# Fixed repo/URLs
-RAW_BASE="https://raw.githubusercontent.com/linux-brat/BSpotDownloader/master"
-RAW_SCRIPT="${RAW_BASE}/bspot.sh"
-RAW_VERSION="${RAW_BASE}/VERSION"
+# - Installs launcher that fetches bspot.sh from master (no VERSION file)
+# - Preserves ~/.config/bspot/config
+#
+# Repo raw URL (fixed):
+RAW_SCRIPT_URL="https://raw.githubusercontent.com/linux-brat/BSpotDownloader/master/bspot.sh"
 
 # Paths
 BIN_DIR="/usr/local/bin"
@@ -18,7 +16,6 @@ LAUNCHER_PATH="${BIN_DIR}/bspot"
 ALIAS_PATH="${BIN_DIR}/bspotdownloader"
 APP_HOME="${HOME}/.local/share/bspot"
 APP_SCRIPT="${APP_HOME}/bspot.sh"
-APP_VERSION_FILE="${APP_HOME}/VERSION"
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
 
@@ -83,7 +80,7 @@ ensure_deps() {
 
 cleanup_old() {
   say "Cleaning previous install (safe)…"
-  rm -f "${APP_SCRIPT}" "${APP_VERSION_FILE}" 2>/dev/null || true
+  rm -f "${APP_SCRIPT}" 2>/dev/null || true
   $SUDO rm -f "${LAUNCHER_PATH}" "${ALIAS_PATH}" 2>/dev/null || true
 }
 
@@ -94,42 +91,69 @@ write_launcher() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-# BSpotDownloader launcher (Linux) — fixed raw URLs (master branch)
-
-RAW_BASE="https://raw.githubusercontent.com/linux-brat/BSpotDownloader/master"
-RAW_SCRIPT="${RAW_BASE}/bspot.sh"
-RAW_VERSION="${RAW_BASE}/VERSION"
+# BSpotDownloader launcher (Linux) — fixed raw URL (master)
+RAW_SCRIPT_URL="https://raw.githubusercontent.com/linux-brat/BSpotDownloader/master/bspot.sh"
 
 APP_HOME="${HOME}/.local/share/bspot"
 APP_SCRIPT="${APP_HOME}/bspot.sh"
-LOCAL_VER_FILE="${APP_HOME}/VERSION"
-
 CONFIG_DIR="${HOME}/.config/bspot"
-mkdir -p "$CONFIG_DIR" "$APP_HOME"
 
-fetch_or_fail() {
-  local url="$1" out="$2"
-  if ! curl -fsSL "$url" -o "$out"; then
-    echo "Cannot fetch BSpotDownloader from: $url"
+usage() {
+  cat <<EOF
+BSpotDownloader launcher
+
+Usage:
+  bspot                 Launch the app menu
+  bspot <url>           Process a single URL directly
+  bspot --uninstall     Remove launcher, cache, and keep/remove config interactively
+  bspot -h | --help     Show this help
+EOF
+}
+
+fetch_fresh() {
+  mkdir -p "$APP_HOME"
+  local ts; ts="$(mktemp)"
+  echo "[bspot] Fetching: $RAW_SCRIPT_URL"
+  if ! curl -fsSL "$RAW_SCRIPT_URL" -o "$ts"; then
+    echo "Cannot fetch BSpotDownloader from: $RAW_SCRIPT_URL"
     exit 1
   fi
-}
-
-update_always() {
-  mkdir -p "$APP_HOME"
-  local ts tv
-  ts="$(mktemp)"; tv="$(mktemp)"
-  echo "[bspot] Fetching: $RAW_SCRIPT"
-  fetch_or_fail "$RAW_SCRIPT" "$ts"
-  echo "[bspot] Fetching: $RAW_VERSION"
-  fetch_or_fail "$RAW_VERSION" "$tv"
   chmod +x "$ts"
   mv "$ts" "$APP_SCRIPT"
-  mv "$tv" "$LOCAL_VER_FILE"
 }
 
-update_always
-exec "$APP_SCRIPT" "$@"
+cmd_uninstall() {
+  echo "Uninstalling BSpotDownloader…"
+  # remove launcher and alias
+  if [ -w "/usr/local/bin" ]; then SUDO=""; else command -v sudo >/dev/null 2>&1 && SUDO="sudo" || SUDO=""; fi
+  $SUDO rm -f /usr/local/bin/bspot /usr/local/bin/bspotdownloader 2>/dev/null || true
+  # remove local app cache
+  rm -rf "$APP_HOME"
+  # ask about config
+  if [ -d "$CONFIG_DIR" ]; then
+    read -r -p "Remove user config at $CONFIG_DIR? [y/N] " ans
+    case "${ans,,}" in y|yes) rm -rf "$CONFIG_DIR"; echo "Config removed." ;; *) echo "Config kept." ;; esac
+  fi
+  echo "Uninstalled."
+  exit 0
+}
+
+main() {
+  mkdir -p "$CONFIG_DIR" "$APP_HOME"
+  case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    --uninstall) cmd_uninstall ;;
+    *) ;;
+  esac
+
+  # Always fetch fresh script (since no VERSION file used)
+  fetch_fresh
+
+  # Forward execution to the app script with original args
+  exec "$APP_SCRIPT" "$@"
+}
+
+main "$@"
 LAUNCHER
   chmod +x "$tmp"
   $SUDO mv "$tmp" "$LAUNCHER_PATH"
@@ -162,7 +186,7 @@ main() {
   cleanup_old
   write_launcher
   ensure_user_config
-  say "Done. Run: bspot"
+  say "Done. Run: bspot  (or: bspotdownloader)"
 }
 
 main "$@"
