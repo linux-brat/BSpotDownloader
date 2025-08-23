@@ -2,10 +2,9 @@
 set -euo pipefail
 
 # BSpotDownloader main app (Linux)
-# UI improvements, format rules:
-# - YouTube links -> audio-only MP4
-# - All other links (incl. Spotify-resolved) -> MP3
-# Persistent config reused automatically.
+# - YouTube: user chooses video quality (Best, 4K, 2K, 1080p, 720p, 480p)
+# - Non-YouTube (incl. Spotify-resolved): MP3 audio-only 320k
+# - Persistent config reused automatically
 
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
@@ -154,44 +153,66 @@ build_dest_path() {
 
 ensure_dir(){ mkdir -p "$1"; }
 
-download_search_to_target() {
-  local query="$1" dest="$2" ext="$3"
+# -------- YouTube video quality handling --------
+yt_quality_menu() {
+  border
+  echo "Choose MP4 video quality:"
+  echo "  1) Best available"
+  echo "  2) 4K (2160p)"
+  echo "  3) 2K (1440p)"
+  echo "  4) 1080p"
+  echo "  5) 720p"
+  echo "  6) 480p"
+  border
+  prompt "Select [1-6]: "
+  case "$REPLY" in
+    1) echo "bestvideo*[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" ;;
+    2) echo "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best" ;;
+    3) echo "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best" ;;
+    4) echo "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best" ;;
+    5) echo "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best" ;;
+    6) echo "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best" ;;
+    *) echo "bestvideo*[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" ;;
+  esac
+}
+
+download_youtube_mp4_with_quality() {
+  local url="$1" outdir="$2" format_selector="$3"
+  ensure_dir "$outdir"
+  local tmpl="${outdir}/%(title)s.%(ext)s"
+  echo "[yt] Format: $format_selector"
+  # Merge tracks with ffmpeg, remux to mp4 if needed
+  yt-dlp -o "$tmpl" -f "$format_selector" --merge-output-format mp4 "$url"
+  echo "[ok] Saved to: $outdir"
+}
+
+# -------- Audio-only (search or direct) --------
+download_search_to_mp3() {
+  local query="$1" dest="$2"
   local parent; parent="$(dirname "$dest")"
   ensure_dir "$parent"
   local tmpl="${parent}/%(title)s.%(ext)s"
-  echo "[dl] $query -> .$ext"
+  echo "[dl] $query -> .mp3"
   yt-dlp -q -f "bestaudio/best" -o "$tmpl" "ytsearch1:${query}"
   local latest; latest="$(ls -t "${parent}"/* 2>/dev/null | head -n1 || true)"
   if [ -z "$latest" ]; then echo "Warning: nothing downloaded for: $query" >&2; return 1; fi
-  if [ "$ext" = "mp4" ]; then
-    ffmpeg -y -hide_banner -loglevel error -i "$latest" -vn -c:a aac -b:a 320k "$dest"
-  else
-    ffmpeg -y -hide_banner -loglevel error -i "$latest" -vn -c:a libmp3lame -b:a 320k "$dest"
-  fi
+  ffmpeg -y -hide_banner -loglevel error -i "$latest" -vn -c:a libmp3lame -b:a 320k "$dest"
   rm -f -- "$latest"
   echo "[ok] $dest"
 }
 
-download_direct_url() {
-  local url="$1" outdir="$2" ext="$3"
+download_direct_to_mp3() {
+  local url="$1" outdir="$2"
   ensure_dir "$outdir"
   local tmpl="${outdir}/%(title)s.%(ext)s"
-  echo "[dl] Direct: $url -> .$ext"
+  echo "[dl] Direct (MP3): $url"
   yt-dlp -f "bestaudio/best" -o "$tmpl" "$url"
   shopt -s nullglob
   for src in "$outdir"/*; do
     local base name dest
-    base="$(basename "$src")"; name="${base%.*}"; dest="${outdir}/$(sanitize_filename "$name").${ext}"
-    if [[ "${src,,}" == *.${ext} ]]; then
-      mv -f "$src" "$dest"
-    else
-      if [ "$ext" = "mp4" ]; then
-        ffmpeg -y -hide_banner -loglevel error -i "$src" -vn -c:a aac -b:a 320k "$dest"
-      else
-        ffmpeg -y -hide_banner -loglevel error -i "$src" -vn -c:a libmp3lame -b:a 320k "$dest"
-      fi
-      rm -f -- "$src"
-    fi
+    base="$(basename "$src")"; name="${base%.*}"; dest="${outdir}/$(sanitize_filename "$name").mp3"
+    ffmpeg -y -hide_banner -loglevel error -i "$src" -vn -c:a libmp3lame -b:a 320k "$dest"
+    rm -f -- "$src"
     echo "[ok] $dest"
   done
 }
@@ -199,6 +220,16 @@ download_direct_url() {
 process_url() {
   local url="$1"
   mkdir -p "$DOWNLOADS_DIR"
+
+  if is_youtube "$url"; then
+    # Ask for quality, then download MP4 video
+    local fmt outdir
+    fmt="$(yt_quality_menu)"
+    outdir="${DOWNLOADS_DIR}/YouTube"
+    download_youtube_mp4_with_quality "$url" "$outdir" "$fmt"
+    echo "[done] Saved under: $outdir"
+    return 0
+  fi
 
   if is_spotify "$url"; then
     local type id token
@@ -225,15 +256,13 @@ process_url() {
       q="${title} ${primary} audio"
       dest="$(build_dest_path "$folder" "$title" "$joined" "mp3")"
       [ -f "$dest" ] && { echo "[skip] $dest"; continue; }
-      download_search_to_target "$q" "$dest" "mp3" || echo "[fail] ${title} — ${joined}" >&2
+      download_search_to_mp3 "$q" "$dest" || echo "[fail] ${title} — ${joined}" >&2
     done
     echo "[done] Saved under: $DOWNLOADS_DIR/$folder"
-
   else
-    local ext folder
-    if is_youtube "$url"; then ext="mp4"; folder="YouTube"; else ext="mp3"; folder="Direct"; fi
-    local outdir="${DOWNLOADS_DIR}/$(sanitize_filename "$folder")"
-    download_direct_url "$url" "$outdir" "$ext"
+    # Non-YouTube direct → MP3
+    local outdir="${DOWNLOADS_DIR}/Direct"
+    download_direct_to_mp3 "$url" "$outdir"
     echo "[done] Saved under: $outdir"
   fi
 }

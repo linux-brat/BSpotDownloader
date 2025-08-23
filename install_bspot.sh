@@ -83,9 +83,7 @@ ensure_deps() {
 
 cleanup_old() {
   say "Cleaning previous install (safe)…"
-  # Remove cached app files (force fresh download)
   rm -f "${APP_SCRIPT}" "${APP_VERSION_FILE}" 2>/dev/null || true
-  # Remove old launchers (will be recreated)
   $SUDO rm -f "${LAUNCHER_PATH}" "${ALIAS_PATH}" 2>/dev/null || true
 }
 
@@ -114,18 +112,13 @@ CONFIG_DIR="${HOME}/.config/bspot"
 mkdir -p "$CONFIG_DIR"
 
 pick_raw_base() {
-  if curl -fsSL "${RAW_BASE_PREF}/VERSION" >/dev/null 2>&1; then
+  if curl -fsSL "${RAW_BASE_PREF}/bspot.sh" >/dev/null 2>&1 && curl -fsSL "${RAW_BASE_PREF}/VERSION" >/dev/null 2>&1; then
     echo "$RAW_BASE_PREF"
-  elif curl -fsSL "${RAW_BASE_FALL}/VERSION" >/dev/null 2>&1; then
+  elif curl -fsSL "${RAW_BASE_FALL}/bspot.sh" >/dev/null 2>&1 && curl -fsSL "${RAW_BASE_FALL}/VERSION" >/dev/null 2>&1; then
     echo "$RAW_BASE_FALL"
   else
     echo ""
   fi
-}
-
-get_remote_version() {
-  local base="$1"
-  curl -fsSL "${base}/VERSION" 2>/dev/null || echo ""
 }
 
 do_update() {
@@ -142,17 +135,13 @@ do_update() {
 
 ensure_latest() {
   mkdir -p "$APP_HOME"
-  local base remote localv
-  base="$(pick_raw_base)"
+  local base; base="$(pick_raw_base)"
   if [ -z "$base" ]; then
-    [ -f "$APP_SCRIPT" ] || { echo "Cannot fetch BSpotDownloader and no local copy found."; exit 1; }
-    return
+    echo "Cannot fetch BSpotDownloader (checked: ${RAW_BASE_PREF} and ${RAW_BASE_FALL}) and no local copy found."
+    exit 1
   fi
-  remote="$(get_remote_version "$base")"
-  localv="$( [ -f "$LOCAL_VER_FILE" ] && cat "$LOCAL_VER_FILE" || echo "" )"
-  if [ -z "$localv" ] || [ -z "$remote" ] || [ "$remote" != "$localv" ]; then
-    do_update "$base" || true
-  fi
+  # Always update (since install cleans cache). You can change to version-compare if desired.
+  do_update "$base" || true
   [ -f "$APP_SCRIPT" ] || { echo "BSpot main script missing."; exit 1; }
 }
 
