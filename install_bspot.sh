@@ -4,13 +4,13 @@ set -euo pipefail
 # Linux-only installer for BSpotDownloader
 # - Cleans previous install (launcher + local cache)
 # - Installs dependencies if missing
-# - Installs self-updating launcher and preserves user config
+# - Installs a launcher that fetches from fixed raw URLs on master
+# - Preserves user config (~/.config/bspot/config)
 
-# ====== REPO SETTINGS ======
-GITHUB_OWNER="linux-brat"
-GITHUB_REPO="BSpotDownloader"
-DEFAULT_BRANCH="master"   # change to "main" if repo default changes
-# ===========================
+# Fixed repo/URLs
+RAW_BASE="https://raw.githubusercontent.com/linux-brat/BSpotDownloader/master"
+RAW_SCRIPT="${RAW_BASE}/bspot.sh"
+RAW_VERSION="${RAW_BASE}/VERSION"
 
 # Paths
 BIN_DIR="/usr/local/bin"
@@ -94,63 +94,43 @@ write_launcher() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-# BSpotDownloader self-updating launcher (Linux)
+# BSpotDownloader launcher (Linux) — fixed raw URLs (master branch)
 
-OWNER="linux-brat"
-REPO="BSpotDownloader"
-BRANCH_PREFERRED="master"
-BRANCH_FALLBACK="main"
-
-RAW_BASE_PREF="https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH_PREFERRED}"
-RAW_BASE_FALL="https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH_FALLBACK}"
+RAW_BASE="https://raw.githubusercontent.com/linux-brat/BSpotDownloader/master"
+RAW_SCRIPT="${RAW_BASE}/bspot.sh"
+RAW_VERSION="${RAW_BASE}/VERSION"
 
 APP_HOME="${HOME}/.local/share/bspot"
 APP_SCRIPT="${APP_HOME}/bspot.sh"
 LOCAL_VER_FILE="${APP_HOME}/VERSION"
 
 CONFIG_DIR="${HOME}/.config/bspot"
-mkdir -p "$CONFIG_DIR"
+mkdir -p "$CONFIG_DIR" "$APP_HOME"
 
-pick_raw_base() {
-  if curl -fsSL "${RAW_BASE_PREF}/bspot.sh" >/dev/null 2>&1 && curl -fsSL "${RAW_BASE_PREF}/VERSION" >/dev/null 2>&1; then
-    echo "$RAW_BASE_PREF"
-  elif curl -fsSL "${RAW_BASE_FALL}/bspot.sh" >/dev/null 2>&1 && curl -fsSL "${RAW_BASE_FALL}/VERSION" >/dev/null 2>&1; then
-    echo "$RAW_BASE_FALL"
-  else
-    echo ""
+fetch_or_fail() {
+  local url="$1" out="$2"
+  if ! curl -fsSL "$url" -o "$out"; then
+    echo "Cannot fetch BSpotDownloader from: $url"
+    exit 1
   fi
 }
 
-do_update() {
-  local base="$1"
+update_always() {
   mkdir -p "$APP_HOME"
   local ts tv
   ts="$(mktemp)"; tv="$(mktemp)"
-  curl -fsSL "${base}/bspot.sh" -o "$ts"
-  curl -fsSL "${base}/VERSION" -o "$tv"
+  echo "[bspot] Fetching: $RAW_SCRIPT"
+  fetch_or_fail "$RAW_SCRIPT" "$ts"
+  echo "[bspot] Fetching: $RAW_VERSION"
+  fetch_or_fail "$RAW_VERSION" "$tv"
   chmod +x "$ts"
   mv "$ts" "$APP_SCRIPT"
   mv "$tv" "$LOCAL_VER_FILE"
 }
 
-ensure_latest() {
-  mkdir -p "$APP_HOME"
-  local base; base="$(pick_raw_base)"
-  if [ -z "$base" ]; then
-    echo "Cannot fetch BSpotDownloader (checked: ${RAW_BASE_PREF} and ${RAW_BASE_FALL}) and no local copy found."
-    exit 1
-  fi
-  # Always update (since install cleans cache). You can change to version-compare if desired.
-  do_update "$base" || true
-  [ -f "$APP_SCRIPT" ] || { echo "BSpot main script missing."; exit 1; }
-}
-
-ensure_latest
+update_always
 exec "$APP_SCRIPT" "$@"
 LAUNCHER
-  sed -i "s/linux-brat/${GITHUB_OWNER}/g" "$tmp"
-  sed -i "s/BSpotDownloader/${GITHUB_REPO}/g" "$tmp"
-  sed -i "s/BRANCH_PREFERRED=\"master\"/BRANCH_PREFERRED=\"${DEFAULT_BRANCH}\"/" "$tmp"
   chmod +x "$tmp"
   $SUDO mv "$tmp" "$LAUNCHER_PATH"
   $SUDO ln -sf "$LAUNCHER_PATH" "$ALIAS_PATH"
