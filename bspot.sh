@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# BSpot (Spotify-only) — MP3 320k with embedded cover art
-# - Entities: playlist, album, track, artist (top tracks)
-# - Beautiful menu with ASCII banner
-# - Live single-line progress bar on top with current song name
-# - Config is reused from ~/.config/bspot/config (never re-asks if present)
+# BSpot (Spotify-only) — MP3 320k with cover art + Stage 3 UX:
+# - Neon banner sweep
+# - Live waveform ribbon on top progress line
+# - Hype moment one-liners between tracks
+# Supports: playlist, album, track, artist (top tracks)
+# Config: ~/.config/bspot/config (reused; never re-asked if present)
 
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
@@ -15,18 +16,35 @@ is_tty() { [ -t 1 ]; }
 cc() { is_tty && tput setaf "$1" || true; }
 cb() { is_tty && tput bold || true; }
 cr() { is_tty && tput sgr0 || true; }
+mv_home(){ tput cup 0 0 >/dev/null 2>&1 || true; }
+savec(){ tput sc >/dev/null 2>&1 || true; }
+restc(){ tput rc >/dev/null 2>&1 || true; }
 line() { printf "%s\n" "────────────────────────────────────────────────────────"; }
 bar()  { printf "%s\n" "========================================================"; }
 
-banner() {
-cat <<'BSPOT'
-██████╗░░██████╗██████╗░░█████╗░████████╗
-██╔══██╗██╔════╝██╔══██╗██╔══██╗╚══██╔══╝
-██████╦╝╚█████╗░██████╔╝██║░░██║░░░██║░░░
-██╔══██╗░╚═══██╗██╔═══╝░██║░░██║░░░██║░░░
-██████╦╝██████╔╝██║░░░░░╚█████╔╝░░░██║░░░
-╚═════╝░╚═════╝░╚═╝░░░░░░╚════╝░░░░╚═╝░░░
-BSPOT
+BANNER_TXT=$'██████╗░░██████╗██████╗░░█████╗░████████╗\n██╔══██╗██╔════╝██╔══██╗██╔══██╗╚══██╔══╝\n██████╦╝╚█████╗░██████╔╝██║░░██║░░░██║░░░\n██╔══██╗░╚═══██╗██╔═══╝░██║░░██║░░░██║░░░\n██████╦╝██████╔╝██║░░░░░╚█████╔╝░░░██║░░░\n╚═════╝░╚═════╝░╚═╝░░░░░░╚════╝░░░░╚═╝░░░'
+
+banner_print_plain() { printf "%s\n" "$BANNER_TXT"; }
+
+banner_sweep() {
+  # Neon sweep: cycles cyan -> magenta -> yellow over the banner briefly
+  local colors=(6 5 3 2 4 1)
+  local i j
+  IFS=$'\n' read -rd '' -a lines <<<"$BANNER_TXT" || true
+  for ((j=0;j<2;j++)); do
+    for i in "${colors[@]}"; do
+      for row in "${lines[@]}"; do
+        printf "%s%s%s\n" "$(cc "$i")" "$row" "$(cr)"
+      done
+      sleep 0.06
+      # move cursor up to redraw over banner
+      tput cuu ${#lines[@]} >/dev/null 2>&1 || true
+    done
+  done
+  # final static cyan
+  for row in "${lines[@]}"; do
+    printf "%s%s%s\n" "$(cc 6)" "$row" "$(cr)"
+  done
 }
 
 title() { bar; printf "  %s\n" "$(cb)$(cc 6)$1$(cr)"; bar; }
@@ -146,7 +164,7 @@ curl_json() {
   printf "%s" "$body"
 }
 
-# ===================== Normalizers with track_id (for cover) =====================
+# ===================== Normalizers (with track_id) =====================
 fetch_playlist_tracks() {
   local id="$1" token="$2"
   local url="https://api.spotify.com/v1/playlists/${id}/tracks?limit=100"
@@ -234,7 +252,7 @@ download_cover_to_tmp() {
   fi
 }
 
-# ===================== Presentation =====================
+# ===================== Presentation & Hype =====================
 print_tracks() {
   local tracks="$1"
   local n; n="$(echo "$tracks" | jq 'length')"
@@ -249,37 +267,86 @@ build_dest() {
   printf "%s/%s/%s\n" "$DOWNLOADS_DIR" "$(sanitize_filename "$folder")" "$(sanitize_filename "${title} - ${artists}").mp3"
 }
 
-# ===================== Progress bar =====================
-# Single top-line progress bar with song name
+hype_moment() {
+  local title="$1" duration_ms="$2"
+  local mins=$(( (duration_ms/1000)/60 ))
+  local t="${title,,}"
+  local msg=""
+  if [ "$mins" -ge 6 ]; then
+    msg="Epic length detected — settle in."
+  elif [[ "$t" == *"live"* || "$t" == *"unplugged"* ]]; then
+    msg="Live vibes incoming — feel the room."
+  elif [[ "$t" == *"remix"* || "$t" == *"edit"* ]]; then
+    msg="Alternate cut — fresh spin on a classic."
+  elif [[ "$t" == *"symphony"* || "$t" == *"concerto"* || "$t" == *"raga"* ]]; then
+    msg="Serious musicianship on deck."
+  fi
+  [ -n "$msg" ] && echo "$(cc 5)★ $msg$(cr)"
+}
+
+# ===================== Top progress: waveform + metrics =====================
+# We synthesize a small “waveform ribbon” using astats snapshots on the fly.
 print_progress_top() {
-  local name="$1" line="$2"
+  local name="$1" line="$2" waveseg="$3"
   local pct speed eta
   pct="$(sed -n 's/.*\[\s*download\s*\]\s*\([0-9.]\+%\).*/\1/p' <<< "$line" | tail -n1 || true)"
   speed="$(sed -n 's/.*at\s\([0-9.]\+[KMG]iB\/s\).*/\1/p' <<< "$line" | tail -n1 || true)"
   eta="$(sed -n 's/.*ETA\s\([0-9:]\+\).*/\1/p' <<< "$line" | tail -n1 || true)"
 
   local p=0; [[ "$pct" =~ ^([0-9]+) ]] && p="${BASH_REMATCH[1]}"
-  local w=40 filled=$(( p * w / 100 )) empty=$(( w - filled ))
+  local w=34 filled=$(( p * w / 100 )) empty=$(( w - filled ))
   local pbar="$(printf "%0.s█" $(seq 1 $filled))$(printf "%0.s░" $(seq 1 $empty))"
 
-  # Move cursor to top line: save cursor, go to line 1, print, restore
-  tput sc >/dev/null 2>&1 || true
-  tput cup 0 0 >/dev/null 2>&1 || true
+  savec
+  mv_home
   printf "%s\r" "$(cb)$(cc 6)♪ $(sanitize_filename "$name")$(cr)"
   printf "\n[%s] %3s  %s  %s\r" "$pbar" "${pct:-..%}" "${eta:+ETA $eta}" "${speed:-}"
-  tput rc >/dev/null 2>&1 || true
+  # ASCII waveform line (third row)
+  printf "\n%s\r" "${waveseg:-}"
+  restc
 }
 
 clear_progress_top() {
-  tput sc >/dev/null 2>&1 || true
-  tput cup 0 0 >/dev/null 2>&1 || true
-  printf "%-80s\r" ""
-  tput cup 1 0 >/dev/null 2>&1 || true
-  printf "%-80s\r" ""
-  tput rc >/dev/null 2>&1 || true
+  savec
+  mv_home
+  printf "%-100s\r" ""
+  printf "\n%-100s\r" ""
+  printf "\n%-100s\r" ""
+  restc
 }
 
-# ===================== Download one with artwork =====================
+# create a tiny waveform snippet from an audio file (fast)
+# returns a 60-char bar using ascii levels ░▒▓█
+make_wave_snippet() {
+  local infile="$1"
+  # sample first ~0.4s envelope
+  local vals; vals="$(ffmpeg -hide_banner -loglevel error -t 0.4 -i "$infile" -af astats=metadata=1:reset=1 -f null - 2>&1 \
+     | awk -F': ' '/Peak_level/ {printf("%.3f ",$2)}' 2>/dev/null || true)"
+  [ -z "$vals" ] && { echo ""; return 0; }
+  # map values to 0..1, then to blocks
+  local out="" v scaled ch idx=0
+  for v in $vals; do
+    # v in dB, negative; normalize
+    # simple map: [-60..0] -> [0..1]
+    scaled=$(awk -v x="$v" 'BEGIN{ s=(x+60)/60; if(s<0)s=0; if(s>1)s=1; printf("%.2f",s)}')
+    ch="░"
+    awk -v s="$scaled" 'BEGIN{
+      if(s>0.80)print "█";
+      else if(s>0.55)print "▓";
+      else if(s>0.30)print "▒";
+      else print "░";
+    }' | read -r ch
+    out="$out$ch"
+    idx=$((idx+1))
+    [ $idx -ge 60 ] && break
+  done
+  # pad to 60
+  local pad=$((60 - idx))
+  [ $pad -gt 0 ] && out="$out$(printf "%0.s░" $(seq 1 $pad))"
+  echo "$out"
+}
+
+# ===================== Download one with artwork + waveform =====================
 download_one() {
   local query="$1" dest="$2" name="$3" cover_url="$4"
   local parent; parent="$(dirname "$dest")"
@@ -290,17 +357,30 @@ download_one() {
   local q2="${query/, / }"
   local cover_file=""
 
+  # Neon banner on track start
+  banner_sweep
+
   if [ -n "${cover_url:-}" ]; then
     cover_file="$(download_cover_to_tmp "$cover_url")"
     [ -n "$cover_file" ] || warn "cover fetch failed for: $name"
   fi
 
+  # temp combine path to draw waveform from
+  local latest=""
+  local wave=""
+
   for q in "$q1" "$q2"; do
-    if yt-dlp --newline -q --default-search ytsearch -f "bestaudio/best" -o "$tmpl" "ytsearch1:${q}" 2>/dev/null | while IFS= read -r ln; do
-         [[ "$ln" == "[download]"* ]] && print_progress_top "$name" "$ln"
+    if yt-dlp --newline -q --default-search ytsearch -f "bestaudio/best" -o "$tmpl" "ytsearch1:${q}" 2>/dev/null | \
+       while IFS= read -r ln; do
+         if [[ "$ln" == "[download]"* ]]; then
+           # try to pick a candidate file once to build a waveform preview
+           if [ -z "$latest" ]; then latest="$(ls -t "${parent}"/* 2>/dev/null | head -n1 || true)"; fi
+           if [ -n "$latest" ] && [ -z "$wave" ]; then wave="$(make_wave_snippet "$latest" || echo "")"; fi
+           print_progress_top "$name" "$ln" "$wave"
+         fi
        done
     then
-      local latest; latest="$(ls -t "${parent}"/* 2>/dev/null | head -n1 || true)"
+      latest="$(ls -t "${parent}"/* 2>/dev/null | head -n1 || true)"
       if [ -n "$latest" ]; then
         clear_progress_top
         if [ -n "$cover_file" ]; then
@@ -387,11 +467,12 @@ process_spotify_url() {
   local token; token="$(spotify_get_token "$SPOTIFY_CLIENT_ID" "$SPOTIFY_CLIENT_SECRET")"
 
   for i in $(seq 0 $((len-1))); do
-    local title artists primary dest name q track_id cover_url
+    local title artists primary dest name q track_id cover_url dur
     title="$(echo "$tracks" | jq -r ".[$i].title")"
     artists="$(echo "$tracks" | jq -r ".[$i].artists | join(\", \")")"
     primary="$(echo "$tracks" | jq -r ".[$i].artists[0]")"
     track_id="$(echo "$tracks" | jq -r ".[$i].track_id // empty")"
+    dur="$(echo "$tracks" | jq -r ".[$i].duration_ms // 0")"
 
     q="${title} ${primary} audio"
     dest="$(build_dest "$folder" "$title" "$artists")"
@@ -401,6 +482,8 @@ process_spotify_url() {
       ok "skip (exists): $dest"
       continue
     fi
+
+    hype_moment "$title" "$dur"
 
     cover_url=""
     if [ -n "$track_id" ]; then
@@ -415,8 +498,8 @@ process_spotify_url() {
 menu() {
   while true; do
     clear || true
-    banner
-    title "BSpot (Spotify-only, MP3 with cover art)"
+    banner_sweep
+    title "BSpot (Spotify-only, MP3 with cover art + Live Waveform)"
     echo "  1) Paste a Spotify link"
     echo "  2) Quit"
     line
