@@ -28,7 +28,7 @@ Linux · Bash · curl · jq · ffmpeg · yt‑dlp
 ## 🚀 Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/your-user/your-repo/master/install_bspot.sh | bash
+curl -fsSL https://raw.githubusercontent.com/linux-brat/BSpotDownloader/master/install_bspot.sh | bash
 ```
 
 What happens:
