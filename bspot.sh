@@ -1,29 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# BSpot (Spotify-only) — MP3 320k with embedded cover art
-# Calm UI (no animations). Simple organization:
-#   DOWNLOADS_DIR (default: ~/Downloads/BSpot)
-#     ├── Single/
-#     │    └── {PrimaryArtist}/Title.mp3
-#     └── Playlist/
-#          └── {PrimaryArtist}/Title.mp3
-#
-# Rules:
-# - Folder bucket is decided by source type:
-#     track  -> Single
-#     playlist/album/artist -> Playlist
-# - Artist folder uses the first (primary) artist.
-# - Filename is just the song Title.mp3 (no artist), as requested.
-# - MP3 gets tags: title, artist (all artists joined with "; "), album_artist (primary),
-#   album (if known), and embedded cover art when available.
-#
-# Config lives at ~/.config/bspot/config and is reused (never re-prompted if present).
+# BSpot (Spotify-only) — MP3 with embedded cover art
+# Calm UI + Quality chooser with size estimates.
+# Organization:
+#   ~/Downloads/BSpot/{Single|Playlist}/{PrimaryArtist}/Title.mp3
 
 CONFIG_DIR="${HOME}/.config/bspot"
 CONFIG_FILE="${CONFIG_DIR}/config"
 
-# ================= UI helpers =================
+# ============== UI helpers ==============
 is_tty() { [ -t 1 ]; }
 cc() { is_tty && tput setaf "$1" || true; }
 cb() { is_tty && tput bold || true; }
@@ -32,7 +18,6 @@ bar()  { printf "%s\n" "========================================================
 line() { printf "%s\n" "────────────────────────────────────────────────────────"; }
 
 BANNER_TXT=$'██████╗░░██████╗██████╗░░█████╗░████████╗\n██╔══██╗██╔════╝██╔══██╗██╔══██╗╚══██╔══╝\n██████╦╝╚█████╗░██████╔╝██║░░██║░░░██║░░░\n██╔══██╗░╚═══██╗██╔═══╝░██║░░██║░░░██║░░░\n██████╦╝██████╔╝██║░░░░░╚█████╔╝░░░██║░░░\n╚═════╝░╚═════╝░╚═╝░░░░░░╚════╝░░░░╚═╝░░░'
-
 banner_print() { printf "%s\n" "$BANNER_TXT"; }
 title() { bar; printf "  %s\n" "$(cb)$(cc 6)$1$(cr)"; bar; }
 die(){ echo "$(cc 1)Error:$(cr) $*" >&2; exit 1; }
@@ -43,7 +28,6 @@ have_cmd(){ command -v "$1" >/dev/null 2>&1; }
 usage() {
   cat <<EOF
 $(cb)$(cc 6)BSpot (Spotify-only)$(cr)
-
 Usage:
   bspot                 Launch menu
   bspot <spotify-url>   Process a Spotify URL directly
@@ -57,7 +41,7 @@ require_cmds() {
   done
 }
 
-# ================= Config =================
+# ============== Config ==============
 first_time_config() {
   mkdir -p "$CONFIG_DIR"
   if [ ! -f "$CONFIG_FILE" ]; then
@@ -71,6 +55,8 @@ first_time_config() {
       echo "YTDLP_SEARCH_COUNT=\"1\""
       echo "MARKET=\"US\""
       echo "SKIP_EXISTING=\"1\""
+      # quality preset (kbps). If empty, chooser prompts each run.
+      echo "QUALITY_PRESET=\"\""
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
   fi
@@ -85,9 +71,10 @@ load_config() {
   : "${YTDLP_SEARCH_COUNT:=1}"
   : "${MARKET:=US}"
   : "${SKIP_EXISTING:=1}"
+  : "${QUALITY_PRESET:=}"
 }
 
-# ================= Helpers =================
+# ============== Helpers ==============
 sanitize_filename() {
   local name="$*"
   name="${name//\//_}"; name="${name//\\/ _}"; name="${name//:/_}"
@@ -101,6 +88,7 @@ sanitize_filename() {
 }
 
 is_spotify() { local u="${1,,}"; [[ "$u" == *"open.spotify.com/"* || "$u" == spotify:* ]]; }
+
 parse_spotify_type_id() {
   local url="$1" path type id
   if [[ "$url" == spotify:* ]]; then
@@ -114,7 +102,7 @@ parse_spotify_type_id() {
   if [[ -z "$type" || -z "$id" || ! "$id" =~ ^[A-Za-z0-9]+$ ]]; then echo "" ""; else echo "$type" "$id"; fi
 }
 
-# ================= Network =================
+# ============== Network ==============
 curl_with_status() { curl -sS "$@" -w '\n%{http_code}'; }
 expect_json() { echo "$1" | jq -e '.' >/dev/null 2>&1; }
 retry_once() { "$@" || { sleep 0.6; "$@"; }; }
@@ -146,7 +134,7 @@ curl_json() {
   printf "%s" "$body"
 }
 
-# ================= Normalizers (with track_id) =================
+# ============== Normalizers (with track_id) ==============
 fetch_playlist_tracks() {
   local id="$1" token="$2"
   local url="https://api.spotify.com/v1/playlists/${id}/tracks?limit=100"
@@ -213,7 +201,7 @@ fetch_artist_top_tracks() {
   }]'
 }
 
-# ================= Cover art =================
+# ============== Cover art ==============
 get_cover_by_track_id() {
   local track_id="$1" token="$2"
   local body; body="$(curl_json "https://api.spotify.com/v1/tracks/${track_id}" "$token")" || return 0
@@ -231,7 +219,7 @@ download_cover_to_tmp() {
   fi
 }
 
-# ================= Presentation =================
+# ============== Presentation & paths ==============
 print_tracks() {
   local tracks="$1"
   local n; n="$(echo "$tracks" | jq 'length')"
@@ -241,9 +229,9 @@ print_tracks() {
   bar
 }
 
-# Decide bucket by source type; then use primary artist folder; filename is just Title.mp3
+# Decide bucket by source type; then use primary artist folder; filename is Title.mp3
 build_dest() {
-  local type="$1" title="$2" artists="$3" primary="$4"
+  local type="$1" title="$2" primary="$3"
   local bucket="Playlist"
   case "$type" in
     track) bucket="Single" ;;
@@ -256,7 +244,58 @@ build_dest() {
     "$(sanitize_filename "$title").mp3"
 }
 
-# ================= Progress (single calm line) =================
+# ============== Quality chooser + size estimates ==============
+# Returns selected kbps in global CHOSEN_KBPS and prints chosen label.
+CHOSEN_KBPS=""
+choose_quality() {
+  # If preset exists and valid, use it silently
+  case "${QUALITY_PRESET:-}" in
+    320|192|128|96) CHOSEN_KBPS="$QUALITY_PRESET"; return 0 ;;
+  esac
+
+  echo
+  echo "Choose audio quality (MP3 CBR):"
+  echo "  1) Very high  (320 kbps)"
+  echo "  2) High       (192 kbps)"
+  echo "  3) Medium     (128 kbps)"
+  echo "  4) Low        (96 kbps)"
+  echo
+  printf "%s" "Select [1-4] (append 'r' to remember, e.g., 1r): "
+  read -r sel
+  local remember="0"
+  if [[ "$sel" =~ r$ ]]; then remember="1"; sel="${sel%r}"; fi
+  case "$sel" in
+    1) CHOSEN_KBPS="320" ;;
+    2) CHOSEN_KBPS="192" ;;
+    3) CHOSEN_KBPS="128" ;;
+    4) CHOSEN_KBPS="96" ;;
+    *) CHOSEN_KBPS="320" ;;
+  esac
+  if [ "$remember" = "1" ]; then
+    # persist to config
+    if grep -q '^QUALITY_PRESET=' "$CONFIG_FILE" 2>/dev/null; then
+      sed -i "s/^QUALITY_PRESET=.*/QUALITY_PRESET=\"$CHOSEN_KBPS\"/" "$CONFIG_FILE"
+    else
+      echo "QUALITY_PRESET=\"$CHOSEN_KBPS\"" >> "$CONFIG_FILE"
+    fi
+    echo "Saved default quality: ${CHOSEN_KBPS} kbps"
+  fi
+}
+
+# human-readable MB with one decimal
+est_mb() {
+  # args: kbps, duration_ms
+  local kbps="$1" dms="$2"
+  local secs=$(( dms / 1000 ))
+  # bytes = kbps * 1000 / 8 * secs; MB ≈ bytes / 1e6
+  # Use bc-like integer math with rounding
+  local bytes=$(( kbps * 1000 * secs / 8 ))
+  local mb_int=$(( bytes / 1000000 ))
+  local mb_dec=$(( (bytes % 1000000) / 100000 )) # one decimal place
+  printf "%d.%d" "$mb_int" "$mb_dec"
+}
+
+# ============== Progress line ==============
 progress_line() {
   local name="$1" line="$2"
   local pct speed eta
@@ -267,11 +306,10 @@ progress_line() {
 }
 clear_progress() { printf "\r%*s\r" 100 ""; }
 
-# ================= Download one (with metadata & cover art) =================
-# Args:
-# 1 query, 2 dest, 3 title(name), 4 cover_url, 5 full_artists ("; " joined), 6 primary_artist, 7 album_meta
+# ============== Download one ==============
+# 1 query, 2 dest, 3 title(name), 4 cover_url, 5 full_artists, 6 primary_artist, 7 album_meta, 8 kbps
 download_one() {
-  local query="$1" dest="$2" name="$3" cover_url="$4" full_artists="$5" primary_artist="$6" album_meta="$7"
+  local query="$1" dest="$2" name="$3" cover_url="$4" full_artists="$5" primary_artist="$6" album_meta="$7" kbps="$8"
   local parent; parent="$(dirname "$dest")"
   mkdir -p "$parent"
   local tmpl="${parent}/%(title)s.%(ext)s"
@@ -298,7 +336,7 @@ download_one() {
           ffmpeg -y -hide_banner -loglevel error \
             -i "$latest" -i "$cover_file" \
             -map 0:a:0 -map 1:v:0 \
-            -c:a libmp3lame -b:a 320k \
+            -c:a libmp3lame -b:a "${kbps}k" \
             -id3v2_version 3 \
             -metadata title="$name" \
             -metadata artist="$full_artists" \
@@ -311,7 +349,7 @@ download_one() {
         else
           ffmpeg -y -hide_banner -loglevel error \
             -i "$latest" \
-            -c:a libmp3lame -b:a 320k \
+            -c:a libmp3lame -b:a "${kbps}k" \
             -id3v2_version 3 \
             -metadata title="$name" \
             -metadata artist="$full_artists" \
@@ -332,7 +370,7 @@ download_one() {
   return 1
 }
 
-# ================= Resolve + run =================
+# ============== Resolve + run ==============
 choose_artist_top_n() {
   echo
   echo "Choose artist top-tracks size:"
@@ -370,15 +408,20 @@ process_spotify_url() {
   [ "$len" -gt 0 ] || die "No tracks found."
   print_tracks "$tracks"
 
-  local type; type="$(parse_spotify_type_id "$url" | awk '{print $1}')"  # track/playlist/album/artist
+  local type; type="$(parse_spotify_type_id "$url" | awk '{print $1}')"
 
-  printf "%s" "Proceed to download as MP3 320k? [y/N] "
+  # quality selection (once per run)
+  choose_quality
+  local kbps="$CHOSEN_KBPS"
+  echo "Selected quality: ${kbps} kbps"
+
+  printf "%s" "Proceed to download as MP3 ${kbps}k? [y/N] "
   read -r ans; case "${ans,,}" in y|yes) ;; *) echo "Cancelled."; return 0;; esac
 
   local token; token="$(spotify_get_token "$SPOTIFY_CLIENT_ID" "$SPOTIFY_CLIENT_SECRET")"
 
   for i in $(seq 0 $((len-1))); do
-    local title artists primary dest name q track_id cover_url album_name full_artists primary_artist
+    local title artists primary dest name q track_id cover_url album_name full_artists primary_artist dur_ms est
 
     title="$(echo "$tracks" | jq -r ".[$i].title")"
     artists="$(echo "$tracks" | jq -r ".[$i].artists | join(\", \")")"
@@ -386,25 +429,25 @@ process_spotify_url() {
     album_name="$(echo "$tracks" | jq -r ".[$i].album // empty")"
     full_artists="$(echo "$tracks" | jq -r ".[$i].artists | join(\"; \")")"
     primary_artist="$primary"
+    dur_ms="$(echo "$tracks" | jq -r ".[$i].duration_ms // 0")"
+    est="$(est_mb "$kbps" "$dur_ms")"
 
-    # destination path based on bucket + artist folder + Title.mp3
-    dest="$(build_dest "$type" "$title" "$artists" "$primary")"
+    dest="$(build_dest "$type" "$title" "$primary")"
     name="$(sanitize_filename "$title")"
-
-    # form search query
     q="${title} ${primary} audio"
 
-    # skip existing
+    # show estimate line
+    echo "$(cc 4)[est]$(cr) ${name} • ~${est} MB at ${kbps} kbps"
+
     if [ "$SKIP_EXISTING" = "1" ] && [ -f "$dest" ]; then
       ok "skip (exists): $dest"
       continue
     fi
 
-    # cover art URL (best effort)
     track_id="$(echo "$tracks" | jq -r ".[$i].track_id // empty")"
     cover_url=""; [ -n "$track_id" ] && cover_url="$(get_cover_by_track_id "$track_id" "$token" || echo "")"
 
-    download_one "$q" "$dest" "$name" "$cover_url" "$full_artists" "$primary_artist" "$album_name" \
+    download_one "$q" "$dest" "$name" "$cover_url" "$full_artists" "$primary_artist" "$album_name" "$kbps" \
       || echo "[fail] ${title} — ${artists}" >&2
   done
 
