@@ -195,4 +195,4 @@ bspot "https://open.spotify.com/artist/<id>"
 
 ## ⚖️ License
 
-(MIT)[LICENCE]
+[MIT](LICENCE)
